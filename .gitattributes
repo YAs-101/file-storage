@@ -1,0 +1,14 @@
+# 统一换行，避免 Windows 上 bat 脚本被转成 LF 后执行异常
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh  text eol=lf
+*.py  text eol=lf
+*.md  text eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.gif binary
+*.jar binary
+*.zip binary
