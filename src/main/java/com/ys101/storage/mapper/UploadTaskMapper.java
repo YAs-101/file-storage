@@ -15,6 +15,10 @@ public interface UploadTaskMapper extends BaseMapper<UploadTask> {
             + "WHERE upload_id = #{uploadId} AND status = 1")
     int casToMerging(@Param("uploadId") String uploadId);
 
+    /** 收到首个分片后把会话从「已初始化」推进到「上传中」，重复调用无副作用 */
+    @Update("UPDATE upload_task SET status = 1 WHERE upload_id = #{uploadId} AND status = 0")
+    int markUploading(@Param("uploadId") String uploadId);
+
     /** 合并成功后置为成功态 */
     @Update("UPDATE upload_task SET status = 3 WHERE upload_id = #{uploadId} AND status = 2")
     int markSuccess(@Param("uploadId") String uploadId);

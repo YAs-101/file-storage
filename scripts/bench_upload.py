@@ -131,6 +131,14 @@ def do_upload(args):
             print("命中秒传，无需上传分片。")
             return 0
 
+        # 分片大小以服务端为准。客户端 --chunk 只是期望值，
+        # 服务端若不采纳，仍按本地值切分会让每个分片都卡在大小校验上。
+        server_chunk = data.get("chunkSize") or chunk_size
+        if server_chunk != chunk_size:
+            print(f"服务端 chunkSize={server_chunk}B，本地 {chunk_size}B，按服务端重新切分")
+            chunk_size = server_chunk
+            total = (size + chunk_size - 1) // chunk_size
+
         upload_id = data["uploadId"]
         done = set(data.get("uploaded") or [])
         todo = [i for i in range(total) if i not in done]

@@ -17,8 +17,10 @@ public interface FileStorage {
     /**
      * 保存一个分片。同一 (uploadId, chunkIndex) 重复调用必须覆盖而非追加，
      * 这样重传分片天然幂等。
+     *
+     * @return 实际写入的字节数，调用方用它和期望大小比对
      */
-    void saveChunk(String uploadId, int chunkIndex, InputStream in);
+    long saveChunk(String uploadId, int chunkIndex, InputStream in);
 
     boolean chunkExists(String uploadId, int chunkIndex);
 
