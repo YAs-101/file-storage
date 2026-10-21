@@ -1,0 +1,57 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: file-storage
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/file_storage?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+    username: root
+    password: 123456
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 3000
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      timeout: 3s
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+  servlet:
+    multipart:
+      # 必须 >= 分片大小 5MB，留 3MB 余量给表单字段与请求头
+      max-file-size: 8MB
+      max-request-size: 10MB
+      file-size-threshold: 1MB
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    # 开发期打开，能看到合并、CAS 的实际 SQL
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
+
+storage:
+  # local | s3（s3 在 M2 实现）
+  type: local
+  local:
+    base-path: ./storage/data
+    temp-path: ./storage/tmp
+  chunk-size: 5242880          # 5MB，与 S3 multipart 规范下限一致
+  session-expire-hours: 24
+  merge-lock-seconds: 30
+
+logging:
+  level:
+    root: info
+    com.ys101.storage: debug

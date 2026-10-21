@@ -13,13 +13,13 @@ target/
 .classpath
 .project
 
-# 运行产物
-logs/
+# 运行产物（必须带前导斜杠：不带的话 storage/ 会连 src/main/java/**/storage/ 包一起忽略）
+/logs/
 *.log
-data/
-uploads/
-tmp/
-storage/
+/data/
+/uploads/
+/tmp/
+/storage/
 
 # 系统
 .DS_Store
