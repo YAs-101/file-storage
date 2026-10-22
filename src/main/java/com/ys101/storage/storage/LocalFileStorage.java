@@ -3,10 +3,12 @@ package com.ys101.storage.storage;
 import com.ys101.storage.common.BizException;
 import com.ys101.storage.common.ResultCode;
 import com.ys101.storage.config.StorageProperties;
+import com.ys101.storage.util.LimitedInputStream;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -116,6 +118,24 @@ public class LocalFileStorage implements FileStorage {
             return Files.newInputStream(objectPath(objectKey));
         } catch (IOException e) {
             throw new BizException(ResultCode.NOT_FOUND, "对象不存在");
+        }
+    }
+
+    @Override
+    public InputStream openRange(String objectKey, long offset, long length) {
+        Path p = objectPath(objectKey);
+        if (!Files.isRegularFile(p)) {
+            throw new BizException(ResultCode.NOT_FOUND, "对象不存在");
+        }
+        try {
+            FileChannel channel = FileChannel.open(p, StandardOpenOption.READ);
+            // position 是随机访问，不需要先把前面 offset 字节读一遍扔掉
+            channel.position(offset);
+            // Channels.newInputStream 的 close 会连带关闭 channel，
+            // 所以 LimitedInputStream.close 一路传下去就能回收文件句柄
+            return new LimitedInputStream(Channels.newInputStream(channel), length);
+        } catch (IOException e) {
+            throw new BizException(ResultCode.STORAGE_ERROR, "读取对象区间失败: " + e.getMessage());
         }
     }
 

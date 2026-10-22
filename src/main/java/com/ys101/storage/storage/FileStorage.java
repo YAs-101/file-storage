@@ -38,6 +38,19 @@ public interface FileStorage {
 
     InputStream open(String objectKey);
 
+    /**
+     * 读取对象的指定字节区间，用于下载的 HTTP Range 断点续传。
+     *
+     * <p>抽象层要求调用方给定 length 而不是让实现读到文件末尾，
+     * 是因为不同存储的能力边界不同：本地实现靠截断流，S3 实现靠 Range GET。
+     * 把「读多少」写进签名，两种实现行为才一致。
+     *
+     * @param offset 起始偏移，从 0 开始
+     * @param length 期望读取的字节数
+     * @return 最多返回 length 字节的流，读完自动结束
+     */
+    InputStream openRange(String objectKey, long offset, long length);
+
     long objectSize(String objectKey);
 
     boolean objectExists(String objectKey);
