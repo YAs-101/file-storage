@@ -1,6 +1,9 @@
 package com.ys101.storage.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ys101.storage.common.BizException;
 import com.ys101.storage.common.Result;
+import com.ys101.storage.common.ResultCode;
 import com.ys101.storage.dto.DownloadTarget;
 import com.ys101.storage.dto.FileItemVO;
 import com.ys101.storage.service.FileService;
@@ -10,6 +13,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -30,6 +35,7 @@ public class FileController {
 
     private final FileService fileService;
     private final FileStorage storage;
+    private final ObjectMapper objectMapper;
 
     /** 文件列表。分页用 limit/offset 而不是页码，前端做无限滚动更直接 */
     @GetMapping("/list")
@@ -54,6 +60,9 @@ public class FileController {
      * 它们只认 HTTP 语义——206 表示可续传、304 表示缓存还有效、416 表示区间非法。
      * 把这些压平成 HTTP 200 + code，断点续传和缓存协商就全废了。
      *
+     * <p>同理，出错时也不能返回 HTTP 200：浏览器点下载链接时，200 就是「下载成功」，
+     * 会把这段错误 JSON 存成一个文件。所以这里绕开全局异常处理，自己写状态码。
+     *
      * <p>顺序要求：所有校验和响应头必须在写第一个字节之前设置完。
      * 一旦 body 开始输出，响应就提交了，后面再出错也无法返回 JSON，
      * 客户端只会拿到一个截断的损坏文件。所以这里没有用 StreamingResponseBody，
@@ -67,8 +76,14 @@ public class FileController {
             @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch,
             HttpServletResponse resp) throws IOException {
 
-        // 1) 权限与元数据校验，失败时还没写过任何字节，可以正常走全局异常处理
-        DownloadTarget target = fileService.downloadTarget(userId, userFileId);
+        // 1) 权限与元数据校验。失败时还没写过任何字节，可以安全地写真实状态码
+        DownloadTarget target;
+        try {
+            target = fileService.downloadTarget(userId, userFileId);
+        } catch (BizException e) {
+            writeError(resp, e.getCode(), e.getMessage());
+            return;
+        }
         long total = target.size();
         String etag = target.etag();
 
@@ -105,6 +120,29 @@ public class FileController {
         if (range != null) {
             offset = range.start();
             length = range.length();
+        }
+
+        // 4) 先打开区间流再设 Content-Length。
+        //    数据库说文件可用、磁盘上对象却没了（人工删了目录、挂载掉了）这种情况必须在这里暴露，
+        //    此时响应还没设长度、也没提交，能干净地改写成错误响应；晚一步就只能发出一个
+        //    声明了长度却写不满的响应，客户端会一直等到超时。
+        InputStream in;
+        try {
+            in = storage.openRange(target.objectKey(), offset, length);
+        } catch (BizException e) {
+            resp.reset();
+            log.error("对象缺失 userFileId={} objectKey={}: {}",
+                    userFileId, target.objectKey(), e.getMessage());
+            writeError(resp, e.getCode(), e.getMessage());
+            return;
+        } catch (RuntimeException e) {
+            resp.reset();
+            log.error("打开对象失败 userFileId={} objectKey={}", userFileId, target.objectKey(), e);
+            writeError(resp, ResultCode.STORAGE_ERROR.getCode(), "存储层读取失败");
+            return;
+        }
+
+        if (range != null) {
             resp.setStatus(HttpServletResponse.SC_PARTIAL_CONTENT);
             resp.setHeader("Content-Range",
                     "bytes " + range.start() + "-" + range.end() + "/" + total);
@@ -114,8 +152,8 @@ public class FileController {
         // 显式长度，让客户端能显示进度条，也让容器走定长传输而非 chunked
         resp.setContentLengthLong(length);
 
-        // 4) 流式输出。openRange 按 offset 定位，LimitedInputStream 保证不多读一个字节
-        try (InputStream in = storage.openRange(target.objectKey(), offset, length)) {
+        // 5) 流式输出。openRange 按 offset 定位，LimitedInputStream 保证不多读一个字节
+        try (in) {
             in.transferTo(resp.getOutputStream());
         } catch (IOException e) {
             // 常见原因是客户端主动断开（多线程下载器拿到足够数据就砍连接）。
@@ -123,6 +161,23 @@ public class FileController {
             log.warn("下载中断 userFileId={} offset={} length={}: {}",
                     userFileId, offset, length, e.getMessage());
         }
+    }
+
+    /**
+     * 把业务错误写成「真实 HTTP 状态码 + 统一 JSON 体」。
+     *
+     * <p>ResultCode 里 4xx/5xx 段的取值刻意与 HTTP 语义对齐（404 / 403 / 413），
+     * 可以直接映射；1xxx 是上传链路专属码，HTTP 层统一归为 400。
+     */
+    private void writeError(HttpServletResponse resp, int code, String msg) throws IOException {
+        HttpStatus resolved = HttpStatus.resolve(code);
+        HttpStatus status = resolved != null && resolved.isError() ? resolved : HttpStatus.BAD_REQUEST;
+        log.warn("下载请求被拒 code={} msg={} -> HTTP {}", code, msg, status.value());
+
+        resp.setStatus(status.value());
+        resp.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        resp.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        resp.getWriter().write(objectMapper.writeValueAsString(Result.fail(code, msg)));
     }
 
     /**

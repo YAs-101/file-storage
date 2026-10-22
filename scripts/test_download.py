@@ -231,17 +231,12 @@ def main():
 
     st, hdr, body = c.download(USER_C, file_b_user_file_id)
     print(f"  用户 C 下载: status={st} content-type={hdr.get('Content-Type')}")
-    # 下载接口是裸 HTTP：校验失败时 body 还没开始写，所以仍走统一 JSON 错误体（HTTP 200 + code）
-    # 成功时 body 才是文件字节。用「能否解析成业务错误 JSON」来判定，而不是只看状态码。
-    denied = False
-    try:
-        j = json.loads(body)
-        denied = j.get("code") == 404
-        print(f"  → 返回业务错误体 code={j.get('code')} msg={j.get('msg')}")
-    except (ValueError, UnicodeDecodeError):
-        denied = st == 404
-    assert denied, f"越权下载未被拦截，status={st} body_len={len(body)}"
-    ok("越权访问 404，无法探测他人文件是否存在")
+    # 下载接口走真实 HTTP 语义：出错不能返回 200，否则浏览器会把错误 JSON 存成文件
+    assert st == 404, f"越权下载期望 HTTP 404，实际 {st}"
+    j = json.loads(body)
+    print(f"  → body code={j.get('code')} msg={j.get('msg')}")
+    assert j.get("code") == 404
+    ok("越权下载 → HTTP 404 + 业务码 404，且无法探测他人文件是否存在")
 
     st, res = c._json("/api/file/9999999", None, "GET", {"X-User-Id": str(USER_A)})
     assert res.get("code") == 404, res
