@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ys101.storage.common.BizException;
 import com.ys101.storage.common.Result;
 import com.ys101.storage.common.ResultCode;
+import com.ys101.storage.dto.DeleteFileResponse;
 import com.ys101.storage.dto.DownloadTarget;
 import com.ys101.storage.dto.FileItemVO;
 import com.ys101.storage.service.FileService;
@@ -15,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -51,6 +53,19 @@ public class FileController {
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId,
             @PathVariable Long userFileId) {
         return Result.ok(fileService.detail(userId, userFileId));
+    }
+
+    /**
+     * 删除文件。重复调用是幂等的——第二次返回 alreadyDeleted=true，不会重复减引用。
+     *
+     * <p>返回体里带 remainingRefs 与 objectRemoved：这两个字段是引用计数设计里
+     * 唯一对调用方不可见的副作用，显式暴露出来，测试和排障才不用去翻库。
+     */
+    @DeleteMapping("/{userFileId}")
+    public Result<DeleteFileResponse> delete(
+            @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId,
+            @PathVariable Long userFileId) {
+        return Result.ok(fileService.delete(userId, userFileId));
     }
 
     /**

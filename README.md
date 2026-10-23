@@ -2,17 +2,18 @@
 
 分片上传 / 断点续传 / 秒传的后端实现，用于把并发、事务、幂等、存储抽象这几个点讲透。
 
-**状态**：项目于 2026-08 立项（需求调研与技术选型），2026-10 起进入编码。已跑通并验证：核心链路 `init / chunk / complete`（12 MB / 3 片上传合并后 MD5 与源文件一致，同文件二次上传 30 ms 秒传，20 并发合并只有 1 次真正执行）；下载链路（多用户秒传共享同一物理对象、`ref_count` 精确归集、HTTP Range 断点续传、ETag 缓存协商、越权按 404 处理）。剩余：删除接口、1 GB 压测、S3 存储实现。
+**状态**：项目于 2026-08 立项（需求调研与技术选型），2026-10 起进入编码。M1 四条链路全部跑通并验证：核心链路 `init / chunk / complete`（12 MB / 3 片上传合并后 MD5 与源文件一致，同文件二次上传 30 ms 秒传，20 并发合并只有 1 次真正执行）；下载链路（多用户共享同一物理对象、HTTP Range 断点续传、ETag 缓存协商、越权按 404 处理）；删除链路（引用归零才删对象、20 并发只有 1 次真正扣减、删干净后重新上传可复活）；断点续传（重连只补缺失分片）。剩余：1 GB 压测、S3 存储实现、前端。
 
 ```
 file-storage/
-├── docs/设计.md            # 边界、领域模型、三个核心流程、四处取舍、压测计划、周计划
+├── docs/设计.md            # 边界、领域模型、核心流程、四处取舍、压测计划、周计划
 ├── docs/开工清单.md        # 环境体检结论、逐时安排、M1 逐日分解、已锁定参数
 ├── sql/schema.sql          # 四张表 DDL + 关键 SQL 示例
 └── scripts/
     ├── bench_upload.py     # 压测脚本（零依赖，三种模式）
-    ├── test_e2e.py         # 上传链路端到端：分片、秒传、并发合并
-    ├── test_download.py    # 下载链路：多用户秒传、Range、ETag、越权
+    ├── test_e2e.py         # 上传链路：分片、秒传、并发合并
+    ├── test_download.py    # 下载链路：Range、ETag、越权
+    ├── test_delete.py      # 删除链路：引用计数、幂等、并发、复活、断点续传
     └── check-env.bat       # 一键环境自检（Redis / MySQL / Maven / 端口）
 ```
 
@@ -70,6 +71,7 @@ python scripts/bench_upload.py merge-race --upload-id <id> --total 20
 | POST | `/api/upload/{uploadId}/complete` | 合并 |
 | GET | `/api/file/list` | 文件列表 |
 | GET | `/api/file/{userFileId}/download` | 下载，支持 Range / ETag |
+| DELETE | `/api/file/{userFileId}` | 删除（只减引用，归零才删物理对象） |
 
 下载接口是唯一不套 `{code,msg,data}` 的接口，它走标准 HTTP 语义——这是断点续传和缓存协商的前提。用 curl 验证：
 
@@ -86,6 +88,9 @@ curl -H "Range: bytes=1048576-" -o part.bin http://localhost:8080/api/file/6/dow
 ```bash
 python scripts/test_e2e.py        # 上传链路
 python scripts/test_download.py   # 下载链路
+python scripts/test_delete.py     # 删除链路 + 断点续传
 ```
 
-`test_download.py` 覆盖 8 个场景：多用户秒传共享物理对象、完整下载校验 MD5、Range 五种分支（含后缀区间与越界 416）、4 线程分段并发下载拼接、ETag 304、越权与不存在统一 404、列表不泄露存储内部字段。
+`test_download.py` 覆盖 8 个场景：多用户秒传共享物理对象、完整下载校验 MD5、Range 五种分支（含后缀区间与越界 416）、4 线程分段并发下载拼接、ETag 304、越权统一 404、列表不泄露存储内部字段。
+
+`test_delete.py` 覆盖 6 个场景：A 删除后 B 仍能下载、最后一个引用释放后磁盘对象消失、越权删除被拒、同一 `userFileId` 20 并发只有 1 次真正扣减、删干净后重新上传可复活、断点续传只补缺失分片。

@@ -318,6 +318,24 @@ public class UploadServiceImpl implements UploadService {
             if (exist == null) {
                 throw e;
             }
+
+            // 秒传判定只认 status=1，所以带着 status=2（已删除）走到这里只有一种解释：
+            // 在本请求查完可用记录之后、插入之前，最后一个引用被删掉并把记录标记成了已删除。
+            // 此时物理对象可能刚被 afterCommit 删除，但我们重新合并出的这份落在同一个
+            // objectKey 上（objectKey 由 md5 决定），等于顺手把对象恢复了，记录也该改回可用。
+            if (Objects.equals(exist.getStatus(), Status.File.DELETED)) {
+                boolean revived = fileInfoMapper.revive(exist.getId(), objectKey, storage.type()) == 1;
+                if (!revived) {
+                    // 另一个请求抢先复活了，它已经加过计数，这里补自己的那一次
+                    fileInfoMapper.incrementRefCount(exist.getId());
+                }
+                // 复活时 object_key 已指向本次合并出的对象，不要再删——删了就真的没了
+                log.info("file_info 处于已删除态，本次合并将其复活 fileId={} 由本请求复活={}",
+                        exist.getId(), revived);
+                FileInfo refreshed = fileInfoMapper.selectById(exist.getId());
+                return refreshed == null ? exist : refreshed;
+            }
+
             // 已有记录说明物理对象本来就在，自己刚合并出的那份是多余的
             if (!exist.getObjectKey().equals(objectKey)) {
                 storage.deleteObject(objectKey);

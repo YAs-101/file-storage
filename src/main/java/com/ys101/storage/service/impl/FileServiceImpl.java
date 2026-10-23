@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.ys101.storage.common.BizException;
 import com.ys101.storage.common.ResultCode;
 import com.ys101.storage.common.Status;
+import com.ys101.storage.dto.DeleteFileResponse;
 import com.ys101.storage.dto.DownloadTarget;
 import com.ys101.storage.dto.FileItemVO;
 import com.ys101.storage.entity.FileInfo;
@@ -11,9 +12,13 @@ import com.ys101.storage.entity.UserFile;
 import com.ys101.storage.mapper.FileInfoMapper;
 import com.ys101.storage.mapper.UserFileMapper;
 import com.ys101.storage.service.FileService;
+import com.ys101.storage.storage.FileStorage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 import java.util.Map;
@@ -32,6 +37,7 @@ public class FileServiceImpl implements FileService {
 
     private final UserFileMapper userFileMapper;
     private final FileInfoMapper fileInfoMapper;
+    private final FileStorage storage;
 
     @Override
     public List<FileItemVO> list(Long userId, int limit, int offset) {
@@ -78,6 +84,97 @@ public class FileServiceImpl implements FileService {
                 fi.getFileMd5(),
                 fi.getObjectKey(),
                 fi.getContentType());
+    }
+
+    /**
+     * 删除用户文件。删除的是「引用」不是「数据」——物理对象要等最后一个引用释放。
+     *
+     * <p>整个方法在一个事务里，但物理对象的删除被推迟到事务提交之后，
+     * 原因见 {@link #deleteObjectAfterCommit}。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public DeleteFileResponse delete(Long userId, Long userFileId) {
+        if (userFileId == null) {
+            throw new BizException(ResultCode.PARAM_ERROR, "userFileId 不能为空");
+        }
+        UserFile uf = userFileMapper.selectById(userFileId);
+        // 不存在与不属于自己一律 404，与读取接口保持一致，不给探测空间
+        if (uf == null || !Objects.equals(uf.getUserId(), userId)) {
+            log.warn("越权删除 userId={} 尝试删除 userFileId={}", userId, userFileId);
+            throw new BizException(ResultCode.NOT_FOUND, "文件不存在");
+        }
+
+        // 幂等的关键：CAS 标记失败说明这条引用已经被删过，此时绝不能再减少引用计数，
+        // 否则别的用户还在用的物理文件会被误判归零而删掉
+        if (userFileMapper.markDeleted(userFileId, userId) == 0) {
+            log.info("重复删除，直接返回 userFileId={}", userFileId);
+            return DeleteFileResponse.builder()
+                    .userFileId(userFileId)
+                    .alreadyDeleted(true)
+                    .objectRemoved(false)
+                    .remainingRefs(-1)
+                    .build();
+        }
+
+        Long fileId = uf.getFileId();
+        fileInfoMapper.releaseRef(fileId);
+
+        // 本事务持有该行的排他锁，读到的必然是上面那条 UPDATE 之后的值，
+        // 并发秒传无法在这一刻插进来把计数改回去
+        FileInfo fi = fileInfoMapper.selectById(fileId);
+        if (fi == null) {
+            log.error("数据不一致：user_file={} 指向不存在的 file_id={}", userFileId, fileId);
+            return DeleteFileResponse.builder()
+                    .userFileId(userFileId)
+                    .alreadyDeleted(false)
+                    .objectRemoved(false)
+                    .remainingRefs(0)
+                    .build();
+        }
+
+        int remaining = fi.getRefCount() == null ? 0 : fi.getRefCount();
+        boolean orphan = remaining == 0;
+        if (orphan) {
+            deleteObjectAfterCommit(fi.getObjectKey());
+            log.info("引用归零，物理对象已安排删除 userFileId={} fileId={} objectKey={}",
+                    userFileId, fileId, fi.getObjectKey());
+        } else {
+            log.info("引用未归零，保留物理对象 userFileId={} fileId={} remaining={}",
+                    userFileId, fileId, remaining);
+        }
+
+        return DeleteFileResponse.builder()
+                .userFileId(userFileId)
+                .alreadyDeleted(false)
+                .objectRemoved(orphan)
+                .remainingRefs(remaining)
+                .build();
+    }
+
+    /**
+     * 物理对象必须在事务提交之后才删。
+     *
+     * <p>反过来做——先删对象再提交——后果不可恢复：一旦事务回滚，数据库里记录还是
+     * 「可用」，磁盘上文件却没了。用户能看到它、能点下载、拿到的却是 404，
+     * 而且没有任何自愈机制，唯一办法是重新上传一遍。
+     *
+     * <p>代价是 afterCommit 已脱离事务，删对象失败无法回滚，只能记日志，
+     * 留下一条 status=2 但对象仍在的孤儿记录。清理这类残留需要扫描
+     * file_info 中 status=2 而 objectExists 为真的记录，M3 再补。
+     */
+    private void deleteObjectAfterCommit(String objectKey) {
+        Runnable task = () -> storage.deleteObject(objectKey);
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            task.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                task.run();
+            }
+        });
     }
 
     /**
