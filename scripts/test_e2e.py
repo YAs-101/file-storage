@@ -161,6 +161,20 @@ def main():
 
     print()
     print("=" * 60)
+    print("场景 5：一个分片都没传就 complete，应报分片不完整而非“正在合并中”")
+    print("=" * 60)
+    st, res = c.init("e2e_empty.bin", 6 * 1024 * 1024, "0" * 32)
+    d = res["data"]
+    uid3 = d["uploadId"]
+    st, res = c.complete(uid3)
+    code, msg = res["code"], res.get("msg")
+    print(f"空会话 complete: HTTP={st} code={code} msg={msg}")
+    # 1005 会让客户端以为“正在合并”而无限轮询；真实原因是零分片
+    assert code == 1003, f"空会话应报 1003 分片不完整，实际 code={code} msg={msg}"
+    print("✅ 空会话 complete 返回分片不完整，不会被误判为合并中")
+
+    print()
+    print("=" * 60)
     print("全部通过。请核对数据库：")
     print("=" * 60)
     print(f"  select count(*) from file_info where file_md5='{md5}';   -- 应为 1")

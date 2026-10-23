@@ -220,10 +220,24 @@ public class UploadServiceImpl implements UploadService {
         int cas = taskMapper.casToMerging(uploadId);
         if (cas == 0) {
             UploadTask latest = loadTask(uploadId);
-            if (latest != null && latest.getStatus() == Status.Upload.SUCCESS) {
+            if (latest == null) {
+                throw new BizException(ResultCode.UPLOAD_NOT_FOUND);
+            }
+            int st = latest.getStatus();
+            if (st == Status.Upload.SUCCESS) {
                 return existingResult(latest);
             }
-            throw new BizException(ResultCode.MERGE_BUSY);
+            if (st == Status.Upload.MERGING) {
+                throw new BizException(ResultCode.MERGE_BUSY);
+            }
+            // CAS 抢不到不一定是并发冲突：会话还停在「已初始化」说明一个分片都没收到，
+            // 真正原因是分片不完整。这里报 MERGE_BUSY 会让客户端以为「正在合并」而反复轮询，
+            // 永远等不到结果。
+            if (st == Status.Upload.INIT) {
+                throw new BizException(ResultCode.CHUNK_INCOMPLETE,
+                        "尚未收到任何分片，无法合并（共需 " + latest.getChunkTotal() + " 片）");
+            }
+            throw new BizException(ResultCode.UPLOAD_STATE_INVALID, "当前会话状态不允许合并");
         }
 
         try {
