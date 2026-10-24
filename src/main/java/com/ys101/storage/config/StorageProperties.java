@@ -23,6 +23,14 @@ public class StorageProperties {
     /** 合并锁 TTL 秒数 */
     private int mergeLockSeconds = 30;
 
+    /**
+     * 单文件大小上限，默认 5GB。
+     *
+     * <p>放配置不放注解：这是运维参数（磁盘配额决定），不是业务常量；
+     * 而且 {@code @Max} 只吃编译期常量，配置改了注解不会跟着变。
+     */
+    private long maxFileSize = 5L * 1024 * 1024 * 1024;
+
     @Data
     public static class Local {
         private String basePath = "./storage/data";

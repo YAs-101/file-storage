@@ -34,8 +34,10 @@ spring:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    # 开发期打开，能看到合并、CAS 的实际 SQL
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 用 Slf4jImpl 而不是 StdOutImpl：后者直接写 stdout、完全无视日志级别，
+    # 一次 1GB 压测会把每条 SQL 都喷出来。Slf4jImpl 走日志框架，
+    # 需要看 SQL 时把 com.ys101.storage.mapper 调成 debug 即可
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   global-config:
     banner: false
     db-config:
@@ -48,10 +50,19 @@ storage:
     base-path: ./storage/data
     temp-path: ./storage/tmp
   chunk-size: 5242880          # 5MB，与 S3 multipart 规范下限一致
+  max-file-size: 5368709120    # 5GB，单文件上限，运维参数
   session-expire-hours: 24
   merge-lock-seconds: 30
 
 logging:
   level:
     root: info
-    com.ys101.storage: debug
+    com.ys101.storage: info
+    # 本机装了 1.2.24 的 tcnative-1.dll，Tomcat 要求 1.2.34，启动时必打一条 ERROR。
+    # 它只影响可选的 APR 连接器，NIO 主链路完全正常。留着这条日志的代价是
+    # 「启动就有 ERROR」变成常态，真故障反而被忽略，所以显式关掉这个类。
+    org.apache.catalina.core.AprLifecycleListener: OFF
+  pattern:
+    # %X{rid} 是 RequestIdFilter 写进 MDC 的请求标识：一次上传会打散成十几个请求，
+    # 并发时只能靠它把「同一次上传」的日志串起来。:- 表示缺省值，非 Web 线程（启动、定时任务）不会打出空方括号。
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{rid:-boot}] [%15.15thread] %-32.32logger{0} : %msg%n"

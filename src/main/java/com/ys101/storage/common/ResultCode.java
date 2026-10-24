@@ -15,6 +15,7 @@ public enum ResultCode {
     UNAUTHORIZED(401, "未认证"),
     FORBIDDEN(403, "无权限"),
     NOT_FOUND(404, "资源不存在"),
+    METHOD_NOT_ALLOWED(405, "请求方法不支持"),
     CONFLICT(409, "状态冲突"),
     PAYLOAD_TOO_LARGE(413, "请求体过大"),
     INTERNAL_ERROR(500, "服务器内部错误"),
@@ -26,7 +27,8 @@ public enum ResultCode {
     MERGE_BUSY(1005, "正在合并中，请稍后查询"),
     MD5_MISMATCH(1006, "合并后 MD5 与声明不一致"),
     SESSION_EXPIRED(1007, "上传会话已过期"),
-    STORAGE_ERROR(1008, "存储层操作失败");
+    STORAGE_ERROR(1008, "存储层操作失败"),
+    FILE_TOO_LARGE(1009, "文件超过大小上限");
 
     private final int code;
     private final String msg;

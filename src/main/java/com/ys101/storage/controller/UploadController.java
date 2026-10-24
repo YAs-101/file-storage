@@ -8,7 +8,9 @@ import com.ys101.storage.dto.InitUploadResponse;
 import com.ys101.storage.service.UploadService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -19,10 +21,17 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
 
+@Validated
 @RestController
 @RequestMapping("/api/upload")
 @RequiredArgsConstructor
 public class UploadController {
+
+    /**
+     * uploadId 是服务端生成的 UUID（去掉连字符），格式固定。
+     * 在入口挡掉格式不对的串，就不必为一个明显的非法值去查一次库。
+     */
+    private static final String UPLOAD_ID_REGEX = "^[a-f0-9]{32}$";
 
     private final UploadService uploadService;
 
@@ -45,7 +54,7 @@ public class UploadController {
     @PutMapping("/{uploadId}/chunk/{chunkIndex}")
     public Result<ChunkUploadResponse> uploadChunk(
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId,
-            @PathVariable String uploadId,
+            @PathVariable @Pattern(regexp = UPLOAD_ID_REGEX, message = "uploadId 必须是 32 位小写十六进制") String uploadId,
             @PathVariable int chunkIndex,
             @RequestHeader(value = "X-Chunk-Md5", required = false) String chunkMd5,
             HttpServletRequest request) throws IOException {
@@ -57,7 +66,7 @@ public class UploadController {
     @PostMapping("/{uploadId}/complete")
     public Result<CompleteUploadResponse> complete(
             @RequestHeader(value = "X-User-Id", defaultValue = "1") Long userId,
-            @PathVariable String uploadId) {
+            @PathVariable @Pattern(regexp = UPLOAD_ID_REGEX, message = "uploadId 必须是 32 位小写十六进制") String uploadId) {
         return Result.ok(uploadService.complete(userId, uploadId));
     }
 }

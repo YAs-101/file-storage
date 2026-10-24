@@ -168,13 +168,18 @@ public class FileController {
         resp.setContentLengthLong(length);
 
         // 5) 流式输出。openRange 按 offset 定位，LimitedInputStream 保证不多读一个字节
+        long begin = System.nanoTime();
         try (in) {
-            in.transferTo(resp.getOutputStream());
+            long written = in.transferTo(resp.getOutputStream());
+            // 下载是纯读路径，量大且高频，日志放在 debug：info 级只保留「状态变更」类事件。
+            // 排查慢请求时把 com.ys101.storage 调到 debug 即可拿到每次传输的字节数与耗时
+            log.debug("下载完成 userFileId={} offset={} bytes={} range={} 用时 {}ms",
+                    userFileId, offset, written, range != null, (System.nanoTime() - begin) / 1_000_000);
         } catch (IOException e) {
             // 常见原因是客户端主动断开（多线程下载器拿到足够数据就砍连接）。
             // 此时响应已提交，再抛给全局处理器只会因二次写响应而报错，所以就地记录。
-            log.warn("下载中断 userFileId={} offset={} length={}: {}",
-                    userFileId, offset, length, e.getMessage());
+            log.warn("下载中断 userFileId={} offset={} length={} 已传输 {}ms: {}",
+                    userFileId, offset, length, (System.nanoTime() - begin) / 1_000_000, e.getMessage());
         }
     }
 
@@ -182,11 +187,21 @@ public class FileController {
      * 把业务错误写成「真实 HTTP 状态码 + 统一 JSON 体」。
      *
      * <p>ResultCode 里 4xx/5xx 段的取值刻意与 HTTP 语义对齐（404 / 403 / 413），
-     * 可以直接映射；1xxx 是上传链路专属码，HTTP 层统一归为 400。
+     * 可以直接映射。1xxx 是上传链路专属码，没有对应的 HTTP 状态，按性质分流：
+     * 存储层故障是服务端问题给 500，其余（会话状态、分片不符）是请求问题给 400。
      */
     private void writeError(HttpServletResponse resp, int code, String msg) throws IOException {
         HttpStatus resolved = HttpStatus.resolve(code);
-        HttpStatus status = resolved != null && resolved.isError() ? resolved : HttpStatus.BAD_REQUEST;
+        HttpStatus status;
+        if (resolved != null && resolved.isError()) {
+            status = resolved;
+        } else if (code == ResultCode.STORAGE_ERROR.getCode()
+                || code == ResultCode.INTERNAL_ERROR.getCode()) {
+            // 磁盘不可读、对象丢失属于服务端故障，给 400 会让客户端以为是自己的问题
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+        } else {
+            status = HttpStatus.BAD_REQUEST;
+        }
         log.warn("下载请求被拒 code={} msg={} -> HTTP {}", code, msg, status.value());
 
         resp.setStatus(status.value());

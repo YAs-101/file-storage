@@ -74,6 +74,12 @@
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                    <!--
+                      中文日志在 Windows 下会按 GBK 写进重定向的文件，用 UTF-8 打开就是乱码。
+                      压测时日志是唯一排障依据，编码必须在启动层面定死，不能依赖控制台代码页。
+                      JDK 18+ 用 stdout.encoding，17 只认 sun.stdout.encoding，两个都给。
+                    -->
+                    <jvmArguments>-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8</jvmArguments>
                 </configuration>
             </plugin>
         </plugins>

@@ -60,8 +60,28 @@ public class UploadServiceImpl implements UploadService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public InitUploadResponse init(Long userId, InitUploadRequest req) {
-        String md5 = req.getFileMd5().toLowerCase();
+        // 用户体系尚未接入，X-User-Id 由客户端自带，所以这里必须挡住非法值：
+        // 否则一个 -1 也能建出 user_file 记录，等于往库里灌脏数据
+        if (userId == null || userId <= 0) {
+            throw new BizException(ResultCode.FORBIDDEN, "X-User-Id 不合法: " + userId);
+        }
+
+        long maxFileSize = props.getMaxFileSize();
+        if (req.getFileSize() > maxFileSize) {
+            throw new BizException(ResultCode.FILE_TOO_LARGE,
+                    "文件 " + req.getFileSize() + " 字节，超过上限 " + maxFileSize + " 字节");
+        }
+
         long chunkSize = props.getChunkSize();
+        // 分片大小由服务端决定。客户端传了就必须一致，不一致立刻报错，
+        // 不要让它传到最后一个分片才因为「大小不符」失败
+        if (req.getChunkSize() != null && req.getChunkSize() != chunkSize) {
+            throw new BizException(ResultCode.CHUNK_CONFLICT,
+                    "分片大小由服务端决定，当前为 " + chunkSize + " 字节，收到 " + req.getChunkSize());
+        }
+
+        long begin = System.nanoTime();
+        String md5 = req.getFileMd5().toLowerCase();
         int chunkTotal = chunkTotal(req.getFileSize(), chunkSize);
 
         // 1) 秒传：物理层已有可用文件，直接建用户引用
@@ -71,7 +91,7 @@ public class UploadServiceImpl implements UploadService {
                 .eq(FileInfo::getStatus, Status.File.AVAILABLE)
                 .last("LIMIT 1"));
         if (exist != null) {
-            return instant(userId, req, exist, chunkSize, chunkTotal);
+            return instant(userId, req, exist, chunkSize, chunkTotal, begin);
         }
 
         // 2) 复用未完成的会话，避免同一文件反复 init 产生一堆孤儿会话
@@ -87,11 +107,13 @@ public class UploadServiceImpl implements UploadService {
         List<Integer> uploaded;
         if (task != null) {
             uploaded = chunkMapper.selectUploadedIndexes(task.getUploadId());
-            log.info("复用会话 uploadId={} 已上传 {}/{}", task.getUploadId(), uploaded.size(), task.getChunkTotal());
+            log.info("复用会话 userId={} uploadId={} 已上传 {}/{} 用时 {}ms",
+                    userId, task.getUploadId(), uploaded.size(), task.getChunkTotal(), elapsedMs(begin));
         } else {
             task = newTask(userId, req, md5, (int) chunkSize, chunkTotal);
             uploaded = List.of();
-            log.info("新建会话 uploadId={} size={} chunkTotal={}", task.getUploadId(), req.getFileSize(), chunkTotal);
+            log.info("新建会话 userId={} uploadId={} size={} chunkTotal={} 用时 {}ms",
+                    userId, task.getUploadId(), req.getFileSize(), chunkTotal, elapsedMs(begin));
         }
 
         return InitUploadResponse.builder()
@@ -205,7 +227,7 @@ public class UploadServiceImpl implements UploadService {
         }
 
         try {
-            return doMerge(task);
+            return doMerge(task, System.nanoTime());
         } finally {
             if (lockAcquired) {
                 releaseLock(lockKey, token);
@@ -213,7 +235,7 @@ public class UploadServiceImpl implements UploadService {
         }
     }
 
-    private CompleteUploadResponse doMerge(UploadTask task) {
+    private CompleteUploadResponse doMerge(UploadTask task, long begin) {
         String uploadId = task.getUploadId();
 
         // 第二层：状态机 CAS，只有能把 1(上传中) 推到 2(合并中) 的请求才有资格合并
@@ -288,8 +310,8 @@ public class UploadServiceImpl implements UploadService {
             // 5) 临时分片是纯冗余数据，删不掉也不影响正确性，所以不放进失败回滚路径
             storage.deleteChunks(uploadId);
 
-            log.info("合并完成 uploadId={} fileId={} size={} md5={}",
-                    uploadId, fileInfo.getId(), storedSize, actualMd5);
+            log.info("合并完成 uploadId={} fileId={} size={} md5={} 用时 {}ms",
+                    uploadId, fileInfo.getId(), storedSize, actualMd5, elapsedMs(begin));
 
             return CompleteUploadResponse.builder()
                     .fileId(fileInfo.getId())
@@ -305,6 +327,8 @@ public class UploadServiceImpl implements UploadService {
             if (latest != null && latest.getStatus() == Status.Upload.MERGING) {
                 taskMapper.rollbackToUploading(uploadId);
             }
+            log.warn("合并失败 uploadId={} 用时 {}ms 原因: {}",
+                    uploadId, elapsedMs(begin), e.getMessage());
             throw e;
         }
     }
@@ -415,7 +439,7 @@ public class UploadServiceImpl implements UploadService {
     }
 
     private InitUploadResponse instant(Long userId, InitUploadRequest req, FileInfo exist,
-                                       long chunkSize, int chunkTotal) {
+                                       long chunkSize, int chunkTotal, long begin) {
         // 引用计数必须原子自增，先查后改在并发下会丢更新
         fileInfoMapper.incrementRefCount(exist.getId());
 
@@ -426,7 +450,8 @@ public class UploadServiceImpl implements UploadService {
         uf.setStatus(Status.File.AVAILABLE);
         userFileMapper.insert(uf);
 
-        log.info("秒传命中 userId={} fileId={} md5={}", userId, exist.getId(), exist.getFileMd5());
+        log.info("秒传命中 userId={} fileId={} size={} md5={} 用时 {}ms",
+                userId, exist.getId(), exist.getFileSize(), exist.getFileMd5(), elapsedMs(begin));
         return InitUploadResponse.builder()
                 .instant(true)
                 .fileId(exist.getId())
@@ -456,5 +481,10 @@ public class UploadServiceImpl implements UploadService {
     /** 分片总数 = ceil(fileSize / chunkSize)，用整数运算避免浮点误差 */
     static int chunkTotal(long fileSize, long chunkSize) {
         return (int) ((fileSize + chunkSize - 1) / chunkSize);
+    }
+
+    /** 耗时统一在这里算，日志里全是 ms，方便直接和压测表对账 */
+    private static long elapsedMs(long beginNano) {
+        return (System.nanoTime() - beginNano) / 1_000_000;
     }
 }
