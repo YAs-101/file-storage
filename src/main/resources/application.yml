@@ -53,6 +53,11 @@ storage:
   max-file-size: 5368709120    # 5GB，单文件上限，运维参数
   session-expire-hours: 24
   merge-lock-seconds: 30
+  # 合并后重读整文件算 MD5 并比对。默认开，是数据完整性的第二道防线；
+  # 关掉可省掉 1GB 文件约 2 秒的全量读（见 README 压测表）
+  verify-merged-md5: true
+  # 并发 complete 时等待他人合并完成的上限，超时才报 1005
+  merge-wait-ms: 3000
 
 logging:
   level:

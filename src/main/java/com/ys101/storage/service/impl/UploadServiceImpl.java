@@ -205,6 +205,11 @@ public class UploadServiceImpl implements UploadService {
             return existingResult(task);
         }
         if (task.getStatus() == Status.Upload.MERGING) {
+            // 有人正在合并。等它落地再返回结果，比让客户端收一个 1005 自己重试更省事
+            UploadTask done = awaitMergeDone(uploadId);
+            if (done != null) {
+                return existingResult(done);
+            }
             throw new BizException(ResultCode.MERGE_BUSY);
         }
 
@@ -223,6 +228,14 @@ public class UploadServiceImpl implements UploadService {
             log.warn("Redis 锁不可用，降级为 CAS + 唯一索引保护: {}", e.getMessage());
         }
         if (redisAvailable && !lockAcquired) {
+            // 锁被别人持有。这里同样等待而不是直接拒绝：持锁请求马上就会把状态推到
+            // MERGING 并开始合并，等待者最终能拿到同一个结果。
+            // 不加这段，20 个并发里 19 个会在这一层被拒，一个都拿不到结果。
+            UploadTask done = awaitMergeDone(uploadId);
+            if (done != null) {
+                log.debug("等待他人合并完成 uploadId={} 直接复用结果", uploadId);
+                return existingResult(done);
+            }
             throw new BizException(ResultCode.MERGE_BUSY);
         }
 
@@ -250,6 +263,14 @@ public class UploadServiceImpl implements UploadService {
                 return existingResult(latest);
             }
             if (st == Status.Upload.MERGING) {
+                // 另一个请求正在合并。合并是秒级操作，这里等它落地后返回同一个结果，
+                // 比让 19 个并发请求各自收一个 1005 再自己重试更合理。
+                // 等待有上限，超时仍报 MERGE_BUSY，避免合并卡死时拖垮线程池。
+                UploadTask done = awaitMergeDone(uploadId);
+                if (done != null) {
+                    log.debug("并发合并等待命中 uploadId={} 直接复用结果", uploadId);
+                    return existingResult(done);
+                }
                 throw new BizException(ResultCode.MERGE_BUSY);
             }
             // CAS 抢不到不一定是并发冲突：会话还停在「已初始化」说明一个分片都没收到，
@@ -279,20 +300,26 @@ public class UploadServiceImpl implements UploadService {
             String objectKey = ObjectKeys.ofMd5(task.getFileMd5());
             long storedSize = storage.mergeChunks(uploadId, indexes, objectKey);
 
-            // 3) 校验合并结果。已知代价：这里会再读一遍文件算 MD5，
-            //    1GB 文件约多 1-2 秒；要省掉这次读，需要让 mergeChunks 边写边算，
-            //    但那会把存储层和摘要逻辑耦合，M1 先接受这次额外读
+            // 3) 校验合并结果。整文件 MD5 默认重读一遍算，代价是 1GB 多一次全量读
+            //    （实测约 2 秒，占合并总耗时一半）。分片级 MD5 只在客户端主动传
+            //    X-Chunk-Md5 时才校验，所以这一步默认保留；关掉它的取舍见 StorageProperties。
             String actualMd5;
-            try (InputStream in = storage.open(objectKey)) {
-                actualMd5 = Md5Utils.of(in);
-            } catch (IOException e) {
-                throw new BizException(ResultCode.STORAGE_ERROR, "校验合并结果失败: " + e.getMessage());
-            }
-            if (!actualMd5.equalsIgnoreCase(task.getFileMd5())) {
-                storage.deleteObject(objectKey);
-                taskMapper.rollbackToUploading(uploadId);
-                throw new BizException(ResultCode.MD5_MISMATCH,
-                        "合并后 MD5=" + actualMd5 + " 与声明 " + task.getFileMd5() + " 不一致，已删除产物");
+            if (props.isVerifyMergedMd5()) {
+                try (InputStream in = storage.open(objectKey)) {
+                    actualMd5 = Md5Utils.of(in);
+                } catch (IOException e) {
+                    throw new BizException(ResultCode.STORAGE_ERROR, "校验合并结果失败: " + e.getMessage());
+                }
+                if (!actualMd5.equalsIgnoreCase(task.getFileMd5())) {
+                    storage.deleteObject(objectKey);
+                    taskMapper.rollbackToUploading(uploadId);
+                    throw new BizException(ResultCode.MD5_MISMATCH,
+                            "合并后 MD5=" + actualMd5 + " 与声明 " + task.getFileMd5() + " 不一致，已删除产物");
+                }
+            } else {
+                // 跳过重算时直接采用客户端声明值，只剩「大小一致 + 分片内容已落盘」作为依据
+                actualMd5 = task.getFileMd5().toLowerCase();
+                log.debug("已关闭合并后 MD5 重算 uploadId={} size={}", uploadId, storedSize);
             }
 
             // 4) 第三层：唯一索引兜底
@@ -382,6 +409,46 @@ public class UploadServiceImpl implements UploadService {
             log.info("file_info 已存在，复用 fileId={} 并自增引用计数", exist.getId());
             return exist;
         }
+    }
+
+    /**
+     * 等别人把合并做完。
+     *
+     * <p>轮询而不是用锁：合并由数据库状态机 CAS 仲裁，本来就没有本地锁可等，
+     * 而且等待者不在同一台机器上也应该能等到结果。间隔 100ms 是权衡——
+     * 再短会打空查询，再长会让等待者多睡一个周期。
+     *
+     * <p>判定为「宽容」：只要没到 FAILED / CANCELED / EXPIRED 这类终态就继续等。
+     * 因为调用方进入这里时可能拿到的是 INIT 或 UPLOADING——持锁的请求还没来得及
+     * 把状态推到 MERGING。按严格判定（只在 MERGING 时等）会让这类请求立刻失败，
+     * 而它们其实马上就能等到结果。
+     *
+     * @return 合并成功的会话快照；超时、合并失败或会话消失时返回 null
+     */
+    private UploadTask awaitMergeDone(String uploadId) {
+        int maxWait = Math.max(0, props.getMergeWaitMs());
+        final int interval = 100;
+        for (int waited = 0; waited < maxWait; waited += interval) {
+            try {
+                Thread.sleep(interval);
+            } catch (InterruptedException e) {
+                // 恢复中断标记后立刻退出，不要吞掉中断信号
+                Thread.currentThread().interrupt();
+                return null;
+            }
+            UploadTask latest = loadTask(uploadId);
+            if (latest == null) {
+                return null;
+            }
+            int st = latest.getStatus();
+            if (st == Status.Upload.SUCCESS) {
+                return latest;
+            }
+            if (st == Status.Upload.FAILED || st == Status.Upload.CANCELED || st == Status.Upload.EXPIRED) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private CompleteUploadResponse existingResult(UploadTask task) {
