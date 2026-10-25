@@ -16,6 +16,8 @@ target/
 # 运行产物（必须带前导斜杠：不带的话 storage/ 会连 src/main/java/**/storage/ 包一起忽略）
 /logs/
 *.log
+# 压测的 jstat 原始采样要留档，是数字可追溯的依据
+!docs/benchmark/*.log
 /data/
 /uploads/
 /tmp/
