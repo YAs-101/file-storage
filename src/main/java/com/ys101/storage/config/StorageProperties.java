@@ -14,6 +14,8 @@ public class StorageProperties {
 
     private Local local = new Local();
 
+    private S3 s3 = new S3();
+
     /** 分片大小，默认 5MB —— 由 S3 multipart 规范下限决定 */
     private long chunkSize = 5 * 1024 * 1024L;
 
@@ -56,5 +58,28 @@ public class StorageProperties {
     public static class Local {
         private String basePath = "./storage/data";
         private String tempPath = "./storage/tmp";
+    }
+
+    /**
+     * S3 兼容存储配置。默认值指向本地 S3Mock，换成真实对象存储只改这一段。
+     *
+     * <p>为什么默认 pathStyle=true：MinIO、S3Mock、Ceph 这类兼容实现只认
+     * path-style（{endpoint}/{bucket}/{key}），virtual-hosted-style 要 DNS 支持
+     * {bucket}.{endpoint}。接 AWS 官方桶时改成 false。
+     */
+    @Data
+    public static class S3 {
+        private String endpoint = "http://127.0.0.1:9090";
+        private String region = "us-east-1";
+        private String accessKey = "test";
+        private String secretKey = "test";
+        private String bucket = "file-storage";
+        private boolean pathStyle = true;
+
+        /**
+         * 分片对象的前缀。分片和最终对象放在同一个桶里但要能区分开，
+         * 否则 deleteChunks 无法按前缀批量清理，只能一个个记 key。
+         */
+        private String chunkPrefix = "chunks";
     }
 }

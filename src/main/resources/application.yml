@@ -44,11 +44,21 @@ mybatis-plus:
       id-type: auto
 
 storage:
-  # local | s3（s3 在 M2 实现）
-  type: local
+  # local | s3。切换只改这一行，业务代码不感知——这是存储抽象要证明的事
+  type: ${STORAGE_TYPE:local}
   local:
     base-path: ./storage/data
     temp-path: ./storage/tmp
+  # S3 兼容存储。默认指向本地 S3Mock（D:\Codex\s3mock-runner），接真实对象存储只改这一段
+  s3:
+    endpoint: ${S3_ENDPOINT:http://127.0.0.1:9090}
+    region: ${S3_REGION:us-east-1}
+    access-key: ${S3_ACCESS_KEY:test}
+    secret-key: ${S3_SECRET_KEY:test}
+    bucket: ${S3_BUCKET:file-storage}
+    # MinIO / S3Mock / Ceph 只认 path-style；AWS 官方桶改 false
+    path-style: ${S3_PATH_STYLE:true}
+    chunk-prefix: chunks
   chunk-size: 5242880          # 5MB，与 S3 multipart 规范下限一致
   max-file-size: 5368709120    # 5GB，单文件上限，运维参数
   session-expire-hours: 24

@@ -17,6 +17,7 @@
 """
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -56,7 +57,7 @@ def delete_one(opener, base, user_file_id, user_id):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="http://127.0.0.1:8080")
+    ap.add_argument("--base", default=os.environ.get("FS_BASE", "http://127.0.0.1:8080"))
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()

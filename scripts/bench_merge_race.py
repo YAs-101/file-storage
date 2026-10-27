@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-BASE_DEFAULT = "http://127.0.0.1:8080"
+BASE_DEFAULT = os.environ.get("FS_BASE", "http://127.0.0.1:8080")
 
 
 def call(base, path, method="GET", payload=None, raw=None, timeout=180):

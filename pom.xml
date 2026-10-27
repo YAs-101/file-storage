@@ -20,6 +20,7 @@
     <properties>
         <java.version>17</java.version>
         <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <awssdk.version>2.25.60</awssdk.version>
     </properties>
 
     <dependencies>
@@ -47,6 +48,33 @@
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
+        </dependency>
+
+        <!--
+          S3 存储实现。版本自己钉：Spring Boot 3.2.4 的 BOM 不管理 AWS SDK，
+          不写版本会直接解析失败。
+        -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>${awssdk.version}</version>
+            <exclusions>
+                <!--
+                  s3 默认带的是 netty-nio-client（异步用的），会拖进 netty-codec-http、
+                  netty-codec-http2、netty-transport-classes-epoll 等一整套，七八个 jar。
+                  本项目只用同步调用，排掉它换下面的 url-connection-client：
+                  基于 JDK 自带 HttpURLConnection，零额外传递依赖。
+                -->
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>netty-nio-client</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>url-connection-client</artifactId>
+            <version>${awssdk.version}</version>
         </dependency>
 
         <dependency>

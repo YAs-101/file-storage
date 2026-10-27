@@ -262,7 +262,7 @@ def do_merge_race(args):
 def main():
     ap = argparse.ArgumentParser(description="文件存储服务压测")
     ap.add_argument("mode", choices=["upload", "instant", "merge-race"])
-    ap.add_argument("--base", default="http://localhost:8080", help="服务地址")
+    ap.add_argument("--base", default=os.environ.get("FS_BASE", "http://localhost:8080"), help="服务地址")
     ap.add_argument("--file", help="待上传文件路径（不填则用 --size 生成临时文件）")
     ap.add_argument("--size", type=int, default=256, help="临时文件大小 MB，默认 256")
     ap.add_argument("--chunk", type=int, default=CHUNK_DEFAULT, help="分片字节数，默认 5MB")

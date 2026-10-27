@@ -8,6 +8,7 @@ M1 负向用例：把每个接口的失败路径固化成断言，防止后续�
 """
 import argparse
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -59,7 +60,7 @@ def expect(c, label, method, path, want_code, body=None, headers=None, want_http
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="http://127.0.0.1:8080")
+    ap.add_argument("--base", default=os.environ.get("FS_BASE", "http://127.0.0.1:8080"))
     args = ap.parse_args()
     c = Client(args.base)
 

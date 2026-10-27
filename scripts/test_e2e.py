@@ -72,7 +72,9 @@ def upload_all(c, uid, path, chunk_size, total):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="http://127.0.0.1:8080")
+    # FS_BASE 让整条工具链不必跟着服务端口改。本机微信输入法的 wetype_renderer.exe
+    # 会绑 0.0.0.0:8080，8080 被占时用 FS_BASE=http://127.0.0.1:18080 跑即可
+    ap.add_argument("--base", default=os.environ.get("FS_BASE", "http://127.0.0.1:8080"))
     args = ap.parse_args()
     c = Client(args.base)
 

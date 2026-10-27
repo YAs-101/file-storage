@@ -2,6 +2,7 @@ package com.ys101.storage.config;
 
 import com.ys101.storage.storage.FileStorage;
 import com.ys101.storage.storage.LocalFileStorage;
+import com.ys101.storage.storage.S3FileStorage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -21,7 +22,7 @@ public class StorageConfig {
             case "local":
                 return new LocalFileStorage(props);
             case "s3":
-                throw new IllegalStateException("storage.type=s3 将在 M2 实现，当前请使用 local");
+                return new S3FileStorage(props);
             default:
                 throw new IllegalStateException("未知 storage.type: " + props.getType());
         }

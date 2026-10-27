@@ -9,6 +9,8 @@ M1 删除链路验证：引用计数、幂等、并发、复活，外加断点�
   - 删干净后重新上传同内容，记录要能复活
 
 用法：python scripts/test_delete.py [--base http://127.0.0.1:8080] [--data-root storage/data]
+      后端为 S3 时加 --s3-endpoint http://127.0.0.1:9090 --bucket file-storage，
+      对象存在性改为对桶做 HEAD，本地目录在这条路径上没有意义。
 """
 import argparse
 import hashlib
@@ -97,14 +99,35 @@ def upload(c, uid, name, payload):
     return res["data"]["fileId"], res["data"]["userFileId"], md5, uidc
 
 
-def object_path(data_root, md5):
-    return os.path.join(data_root, md5[:2], md5[2:])
+def object_key(md5):
+    return f"{md5[:2]}/{md5[2:]}"
+
+
+def object_exists(args, md5):
+    """对象在当前存储后端是否存在。
+
+    给了 --s3-endpoint 就 HEAD 桶里的对象，否则查本地目录。
+    断言不能绑死在本地文件系统上：M2 换 S3 后同一份用例要在两种实现上都跑得通，
+    否则「换存储后端不改业务代码」这句话就没有证据。
+    """
+    if args.s3_endpoint:
+        url = f"{args.s3_endpoint.rstrip('/')}/{args.bucket}/{object_key(md5)}"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=10):
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            raise
+    return os.path.isfile(os.path.join(args.data_root, *object_key(md5).split("/")))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="http://127.0.0.1:8080")
+    ap.add_argument("--base", default=os.environ.get("FS_BASE", "http://127.0.0.1:8080"))
     ap.add_argument("--data-root", default=os.path.join("storage", "data"))
+    ap.add_argument("--s3-endpoint", default=os.environ.get("S3_ENDPOINT"))
+    ap.add_argument("--bucket", default=os.environ.get("S3_BUCKET", "file-storage"))
     args = ap.parse_args()
     c = Client(args.base)
 
@@ -129,8 +152,8 @@ def main():
     assert d["remainingRefs"] == 1, f"剩余引用应为 1，实际 {d['remainingRefs']}"
     ok("A 删除只减引用，物理对象保留")
 
-    assert os.path.isfile(object_path(args.data_root, md5)), "磁盘上对象不该消失"
-    ok("磁盘对象确实还在")
+    assert object_exists(args, md5), "存储中对象不该消失"
+    ok("存储中的对象确实还在")
 
     st, body = c.download(USER_B, uf_b)
     assert st == 200 and md5_bytes(body) == md5, "B 应仍能完整下载"
@@ -152,13 +175,13 @@ def main():
     print(f"  B 删除: objectRemoved={d['objectRemoved']} remainingRefs={d['remainingRefs']}")
     assert d["objectRemoved"] is True, "引用归零应删除物理对象"
     assert d["remainingRefs"] == 0
-    # afterCommit 在事务提交后同步执行，这里稍等一下再查磁盘，避免时序抖动
+    # afterCommit 在事务提交后同步执行，这里稍等一下再查存储，避免时序抖动
     for _ in range(20):
-        if not os.path.exists(object_path(args.data_root, md5)):
+        if not object_exists(args, md5):
             break
         time.sleep(0.1)
-    assert not os.path.exists(object_path(args.data_root, md5)), "物理对象应已被删除"
-    ok("引用归零，磁盘对象已消失")
+    assert not object_exists(args, md5), "物理对象应已被删除"
+    ok("引用归零，存储中对象已消失")
 
     st, body = c.download(USER_B, uf_b)
     assert st == 404, f"已删文件下载应 404，实际 {st}"
@@ -213,7 +236,7 @@ def main():
     st, body = c.download(USER_A, uf_f)
     assert st == 200 and md5_bytes(body) == md5_4, "复活后必须能下载且内容一致"
     ok("记录复活，下载内容与原文件一致")
-    assert os.path.isfile(object_path(args.data_root, md5_4)), "复活时对象应重新落盘"
+    assert object_exists(args, md5_4), "复活时对象应重新写入存储"
     ok("物理对象已重新写入")
     c.delete(USER_A, uf_f)
 
