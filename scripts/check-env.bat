@@ -41,7 +41,7 @@ if errorlevel 1 (
 echo.
 
 echo [3/4] Maven offline resolve ...
-call mvn -f scripts\prefetch-pom.xml -o -q dependency:resolve >"%TEMP%\fs_mvn.txt" 2>&1
+call mvn -o -q dependency:resolve >"%TEMP%\fs_mvn.txt" 2>&1
 if errorlevel 1 (
     echo    FAIL  offline resolve failed, run without -o to refill cache
     set FAILED=1
@@ -50,12 +50,31 @@ if errorlevel 1 (
 )
 echo.
 
-echo [4/4] Port 8080 free ...
-netstat -ano | findstr /R /C:"LISTENING.*:8080 " >nul
+REM Check FS_PORT instead of a hard-coded 8080: since 2026-10-27 the WeType
+REM input method (wetype_renderer.exe) steals 0.0.0.0:8080 on this machine.
+REM netstat is not enough here: that socket sits in "Bound" state without ever
+REM reaching LISTENING, so netstat shows nothing while bind() still fails.
+REM Try the actual bind instead - that is the only check that matches reality.
+if not defined FS_PORT set FS_PORT=8080
+echo [4/4] Port %FS_PORT% free ...
+powershell -NoProfile -Command "try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, %FS_PORT%); $l.Start(); $l.Stop(); exit 0 } catch { exit 1 }" >nul 2>&1
 if errorlevel 1 (
-    echo    OK    port 8080 is free
+    echo    WARN  port %FS_PORT% cannot be bound
+    echo          WeType likely holds it. Use another port:
+    echo            set FS_PORT=18080                     then run run.bat / run-s3.bat
+    echo            set FS_BASE=http://127.0.0.1:18080    for the test scripts
 ) else (
-    echo    WARN  port 8080 already in use, change server.port
+    echo    OK    port %FS_PORT% is bindable
+)
+echo.
+
+echo [extra] S3 endpoint 9090 ...
+netstat -ano | findstr /R /C:":9090 .*LISTENING" >nul
+if errorlevel 1 (
+    echo    INFO  not running. Needed only for STORAGE_TYPE=s3:
+    echo          D:\Codex\s3mock-runner\start.bat
+) else (
+    echo    OK    S3Mock is listening
 )
 echo.
 
@@ -67,4 +86,4 @@ if "%FAILED%"=="1" (
 )
 echo --------------------------------------------
 del "%TEMP%\fs_redis.txt" "%TEMP%\fs_mysql.txt" "%TEMP%\fs_mvn.txt" >nul 2>&1
-pause
+if /i not "%~1"=="-y" pause

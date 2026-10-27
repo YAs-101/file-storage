@@ -3,10 +3,12 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0.."
 
-REM 沙箱会注入 SERVER__PORT=3137，Spring 的 relaxed binding 会把它当成 server.port，
-REM 优先级高于 application.yml，导致端口冲突。这里显式覆盖回 FS_PORT。
-REM 本机微信输入法的 wetype_renderer.exe 会绑 0.0.0.0:8080，8080 被占时用
-REM   set FS_PORT=18080 后再运行本脚本，测试脚本配合 FS_BASE 即可
+REM The sandbox injects SERVER__PORT (value differs every session), and Spring's
+REM relaxed binding treats it as server.port with higher precedence than
+REM application.yml. Override it here or the app fights for the wrong port.
+REM WeType (input method) holds 0.0.0.0:8080 on this machine since 2026-10-27,
+REM so run "set FS_PORT=18080" first when 8080 cannot be bound, and pair it with
+REM "set FS_BASE=http://127.0.0.1:18080" for the test scripts.
 if not defined FS_PORT set FS_PORT=8080
 set SERVER__PORT=%FS_PORT%
 
