@@ -34,16 +34,32 @@ public class StorageProperties {
     private long maxFileSize = 5L * 1024 * 1024 * 1024;
 
     /**
-     * 合并后是否重读整文件、重算 MD5 并比对声明值。
+     * 合并后如何校验产物，按后端能力分策略。
      *
-     * <p>默认开启，这是第二道防线：分片级 MD5 只在客户端主动传 {@code X-Chunk-Md5}
-     * 时才校验，不能指望它兜住全部场景。
+     * <p>M1 里这是一个 boolean：开就重读整文件算 MD5。到 M2 才发现同一种做法在两种
+     * 后端上的代价完全不同——本地是读盘，S3 是整对象出网（真实环境还计流量费）。
+     * 所以改成三态，默认 {@link VerifyMode#AUTO}：
      *
-     * <p>代价是 1GB 文件多一次全量读。实测合并 1GB 用时 4120ms，关掉后约 2100ms
-     * （见 README 压测表），差的那部分就是这次全量读。数据完整性要求不高、
-     * 又需要压大文件吞吐时可以关掉。
+     * <ul>
+     *   <li>后端能给产物指纹（S3 的 ETag）→ 用指纹校验，零传输；</li>
+     *   <li>后端给不出（本地磁盘）→ 退回全量读回算 MD5。</li>
+     * </ul>
+     *
+     * <p>指纹校验证明的是「拼出来的对象确实由这些分片、按这个顺序组成」，
+     * 分片内容是服务端收流时算过 MD5 的，所以链条完整；但 S3 多段上传的情况下
+     * 它代替不了「整文件 MD5 == 客户端声明值」这一步——那头只能全量读回才能确认。
+     * 这个语义差要用 {@link VerifyMode#ALWAYS} 才能补上，取舍见 docs/M2-S3存储实现.md。
      */
-    private boolean verifyMergedMd5 = true;
+    private VerifyMode verifyMergedMd5 = VerifyMode.AUTO;
+
+    public enum VerifyMode {
+        /** 按后端能力自动选：有指纹用指纹，没有就全量读回 */
+        AUTO,
+        /** 一律全量读回算 MD5，语义最强，代价是一次完整读 */
+        ALWAYS,
+        /** 一律不校验，只用于压测对照实验（M1 的 L7-B 就是靠它测出重算占 47%） */
+        NEVER
+    }
 
     /**
      * 并发调用 complete 时，抢不到合并权的请求最多等待多久（毫秒）。

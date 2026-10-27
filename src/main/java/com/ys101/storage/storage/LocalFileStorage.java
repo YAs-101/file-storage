@@ -83,7 +83,7 @@ public class LocalFileStorage implements FileStorage {
     }
 
     @Override
-    public long mergeChunks(String uploadId, List<Integer> indexes, String objectKey) {
+    public MergeResult mergeChunks(String uploadId, List<Integer> indexes, String objectKey) {
         Path out = objectPath(objectKey);
         try {
             Files.createDirectories(out.getParent());
@@ -104,7 +104,10 @@ public class LocalFileStorage implements FileStorage {
                         }
                     }
                 }
-                return outCh.size();
+                // 本地磁盘没有内容指纹，交给校验层全量读回。
+                // 不用 transferTo 顺带算 MD5：transferTo 是零拷贝，改成读循环能把
+                // 400MB/s 的搬运速度打下来，省下的那次读还不够赔的
+                return MergeResult.ofSize(outCh.size());
             }
         } catch (BizException e) {
             throw e;

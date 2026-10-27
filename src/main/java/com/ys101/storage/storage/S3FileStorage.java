@@ -11,6 +11,8 @@ import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CompletedPart;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadResponse;
+import software.amazon.awssdk.services.s3.model.CopyObjectResponse;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
@@ -165,24 +167,27 @@ public class S3FileStorage implements FileStorage {
     }
 
     @Override
-    public long mergeChunks(String uploadId, List<Integer> indexes, String objectKey) {
+    public MergeResult mergeChunks(String uploadId, List<Integer> indexes, String objectKey) {
         if (indexes == null || indexes.isEmpty()) {
             throw new BizException(ResultCode.CHUNK_INCOMPLETE, "分片列表为空");
         }
 
         // 单片文件（小于 5 MB）直接服务端 copy。S3 允许只有一个 part 的 multipart，
-        // 但为搬一个对象付 Create + UploadPartCopy + Complete 三次往返不值得
+        // 但为搬一个对象付 Create + UploadPartCopy + Complete 三次往返不值得。
+        // 附带好处：单段 copy 的 ETag 就是对象内容的 MD5，校验层可以直接拿它
+        // 和客户端声明的 fileMd5 比对，零传输完成端到端校验
         if (indexes.size() == 1) {
             String src = chunkKey(uploadId, indexes.get(0));
             requireChunk(src, indexes.get(0));
             try {
-                s3.copyObject(b -> b.sourceBucket(bucket).sourceKey(src)
+                CopyObjectResponse copied = s3.copyObject(b -> b.sourceBucket(bucket).sourceKey(src)
                         .destinationBucket(bucket).destinationKey(objectKey));
+                return new MergeResult(objectSize(objectKey),
+                        copied.copyObjectResult().eTag());
             } catch (S3Exception e) {
                 throw new BizException(ResultCode.STORAGE_ERROR,
                         "合并分片失败: " + e.getMessage());
             }
-            return objectSize(objectKey);
         }
 
         CreateMultipartUploadResponse created = s3.createMultipartUpload(
@@ -215,7 +220,7 @@ public class S3FileStorage implements FileStorage {
                 parts.add(f.get());
             }
             long tCopied = System.currentTimeMillis();
-            s3.completeMultipartUpload(b -> b.bucket(bucket).key(objectKey)
+            CompleteMultipartUploadResponse completed = s3.completeMultipartUpload(b -> b.bucket(bucket).key(objectKey)
                     .uploadId(s3UploadId)
                     .multipartUpload(m -> m.parts(parts)));
             long tCompleted = System.currentTimeMillis();
@@ -223,7 +228,8 @@ public class S3FileStorage implements FileStorage {
             // 存储端拼接整对象的问题，混在一起看不出该调哪个参数
             log.info("S3 合并完成 key={} parts={} threads={} copy={}ms complete={}ms",
                     objectKey, indexes.size(), threads, tCopied - tBegin, tCompleted - tCopied);
-            return objectSize(objectKey);
+            // 多段 ETag 形如 md5(各 part 二进制 MD5 串接)-N，交给校验层与本地推算值比对
+            return new MergeResult(objectSize(objectKey), completed.eTag());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             abortQuietly(objectKey, s3UploadId);

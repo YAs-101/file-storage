@@ -36,9 +36,9 @@ public interface FileStorage {
      * 本地实现用 FileChannel 顺序写；S3 实现走 CompleteMultipartUpload。
      *
      * @param indexes 分片序号，调用方保证升序且完整
-     * @return 实际写入的字节数
+     * @return 实际字节数，以及后端能提供的产物指纹（没有则为 null）
      */
-    long mergeChunks(String uploadId, List<Integer> indexes, String objectKey);
+    MergeResult mergeChunks(String uploadId, List<Integer> indexes, String objectKey);
 
     InputStream open(String objectKey);
 

@@ -33,4 +33,14 @@ public interface UploadChunkMapper extends BaseMapper<UploadChunk> {
     /** 已上传分片数，合并前用它和 chunk_total 比对 */
     @Select("SELECT COUNT(*) FROM upload_chunk WHERE upload_id = #{uploadId} AND status = 1")
     int countUploaded(@Param("uploadId") String uploadId);
+
+    /**
+     * 按分片序号升序取各分片的 MD5，用于推算 S3 多段对象的期望 ETag。
+     *
+     * <p>存的是服务端收流时自己算的值，不是客户端报上来的，所以可信：
+     * 一旦哪个分片在落盘后被换掉，串接再算的结果就和存储返回的 ETag 对不上。
+     */
+    @Select("SELECT chunk_md5 FROM upload_chunk "
+            + "WHERE upload_id = #{uploadId} AND status = 1 ORDER BY chunk_index")
+    List<String> selectChunkMd5s(@Param("uploadId") String uploadId);
 }

@@ -65,9 +65,11 @@ storage:
   max-file-size: 5368709120    # 5GB，单文件上限，运维参数
   session-expire-hours: 24
   merge-lock-seconds: 30
-  # 合并后重读整文件算 MD5 并比对。默认开，是数据完整性的第二道防线；
-  # 关掉可省掉 1GB 文件约 2 秒的全量读（见 README 压测表）
-  verify-merged-md5: true
+  # 合并后校验策略，按后端能力分：
+  #   auto   —— 后端能给产物指纹（S3 的 ETag）就用指纹，零传输；给不出（本地磁盘）就全量读回
+  #   always —— 一律全量读回算 MD5，语义最强，1GB 多读一次整文件
+  #   never  —— 一律不校验，只用于压测对照实验
+  verify-merged-md5: ${STORAGE_VERIFY_MERGED_MD5:auto}
   # 并发 complete 时等待他人合并完成的上限，超时才报 1005
   merge-wait-ms: 3000
 

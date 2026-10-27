@@ -16,8 +16,10 @@ import com.ys101.storage.mapper.FileInfoMapper;
 import com.ys101.storage.mapper.UploadChunkMapper;
 import com.ys101.storage.mapper.UploadTaskMapper;
 import com.ys101.storage.mapper.UserFileMapper;
+import com.ys101.storage.service.MergeVerifier;
 import com.ys101.storage.service.UploadService;
 import com.ys101.storage.storage.FileStorage;
+import com.ys101.storage.storage.MergeResult;
 import com.ys101.storage.util.Md5Utils;
 import com.ys101.storage.util.ObjectKeys;
 import lombok.RequiredArgsConstructor;
@@ -55,6 +57,7 @@ public class UploadServiceImpl implements UploadService {
     private final UserFileMapper userFileMapper;
     private final StorageProperties props;
     private final FileStorage storage;
+    private final MergeVerifier mergeVerifier;
     private final StringRedisTemplate redis;
 
     @Override
@@ -298,29 +301,19 @@ public class UploadServiceImpl implements UploadService {
 
             // 2) 合并。objectKey 由 md5 决定，与上传会话无关，所以同内容必然落到同一路径
             String objectKey = ObjectKeys.ofMd5(task.getFileMd5());
-            long storedSize = storage.mergeChunks(uploadId, indexes, objectKey);
+            MergeResult merged = storage.mergeChunks(uploadId, indexes, objectKey);
+            long storedSize = merged.size();
 
-            // 3) 校验合并结果。整文件 MD5 默认重读一遍算，代价是 1GB 多一次全量读
-            //    （实测约 2 秒，占合并总耗时一半）。分片级 MD5 只在客户端主动传
-            //    X-Chunk-Md5 时才校验，所以这一步默认保留；关掉它的取舍见 StorageProperties。
-            String actualMd5;
-            if (props.isVerifyMergedMd5()) {
-                try (InputStream in = storage.open(objectKey)) {
-                    actualMd5 = Md5Utils.of(in);
-                } catch (IOException e) {
-                    throw new BizException(ResultCode.STORAGE_ERROR, "校验合并结果失败: " + e.getMessage());
-                }
-                if (!actualMd5.equalsIgnoreCase(task.getFileMd5())) {
-                    storage.deleteObject(objectKey);
-                    taskMapper.rollbackToUploading(uploadId);
-                    throw new BizException(ResultCode.MD5_MISMATCH,
-                            "合并后 MD5=" + actualMd5 + " 与声明 " + task.getFileMd5() + " 不一致，已删除产物");
-                }
-            } else {
-                // 跳过重算时直接采用客户端声明值，只剩「大小一致 + 分片内容已落盘」作为依据
-                actualMd5 = task.getFileMd5().toLowerCase();
-                log.debug("已关闭合并后 MD5 重算 uploadId={} size={}", uploadId, storedSize);
+            // 3) 校验合并结果。策略见 StorageProperties.VerifyMode：
+            //    本地磁盘退回全量读回，S3 用 merge 返回的 ETag 与本地推算值比对（零传输）。
+            //    失败要删产物并回滚会话状态，否则重试会撞上「合并中」永远出不来
+            MergeVerifier.Verification verify = mergeVerifier.verify(task, objectKey, merged);
+            if (!verify.ok()) {
+                storage.deleteObject(objectKey);
+                taskMapper.rollbackToUploading(uploadId);
+                throw new BizException(ResultCode.MD5_MISMATCH, verify.detail() + "，已删除产物");
             }
+            String actualMd5 = verify.md5();
 
             // 4) 第三层：唯一索引兜底
             FileInfo fileInfo = writeFileInfo(task, objectKey, actualMd5, storedSize);
@@ -337,8 +330,8 @@ public class UploadServiceImpl implements UploadService {
             // 5) 临时分片是纯冗余数据，删不掉也不影响正确性，所以不放进失败回滚路径
             storage.deleteChunks(uploadId);
 
-            log.info("合并完成 uploadId={} fileId={} size={} md5={} 用时 {}ms",
-                    uploadId, fileInfo.getId(), storedSize, actualMd5, elapsedMs(begin));
+            log.info("合并完成 uploadId={} fileId={} size={} md5={} 校验={} 用时 {}ms",
+                    uploadId, fileInfo.getId(), storedSize, actualMd5, verify.evidence(), elapsedMs(begin));
 
             return CompleteUploadResponse.builder()
                     .fileId(fileInfo.getId())

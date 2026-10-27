@@ -36,6 +36,27 @@ public final class Md5Utils {
     }
 
     /**
+     * 十六进制 MD5 转回 16 字节二进制。S3 的 multipart ETag 是把各 part 的
+     * 二进制 MD5 直接串接后再生算一次 MD5，所以必须先转回字节再拼，
+     * 不能拿 32 个字符的十六进制串直接连。
+     */
+    public static byte[] fromHex(String hex) {
+        if (hex == null || hex.length() % 2 != 0) {
+            throw new IllegalArgumentException("非法的十六进制串");
+        }
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int hi = Character.digit(hex.charAt(i * 2), 16);
+            int lo = Character.digit(hex.charAt(i * 2 + 1), 16);
+            if (hi < 0 || lo < 0) {
+                throw new IllegalArgumentException("非法的十六进制串");
+            }
+            out[i] = (byte) ((hi << 4) | lo);
+        }
+        return out;
+    }
+
+    /**
      * 流式计算 MD5，内存占用与文件大小无关。
      * 这是「1GB 文件校验不能把整个文件读进内存」的具体解法。
      */
