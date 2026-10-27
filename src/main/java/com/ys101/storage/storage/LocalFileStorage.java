@@ -54,12 +54,13 @@ public class LocalFileStorage implements FileStorage {
     }
 
     @Override
-    public long saveChunk(String uploadId, int chunkIndex, InputStream in) {
+    public long saveChunk(String uploadId, int chunkIndex, InputStream in, long contentLength) {
         Path target = chunkPath(uploadId, chunkIndex);
         try {
             Files.createDirectories(target.getParent());
             // REPLACE_EXISTING 保证重复上传同一分片是覆盖而不是追加；
-            // Files.copy 直接把流写进文件，不经过 byte[]，内存占用与分片大小无关
+            // Files.copy 直接把流写进文件，不经过 byte[]，内存占用与分片大小无关。
+            // contentLength 对本地实现没有用：文件系统自己会写多少记多少
             return Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             throw new BizException(ResultCode.STORAGE_ERROR, "写入分片失败: " + e.getMessage());

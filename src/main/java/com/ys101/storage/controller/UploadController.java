@@ -59,7 +59,10 @@ public class UploadController {
             @RequestHeader(value = "X-Chunk-Md5", required = false) String chunkMd5,
             HttpServletRequest request) throws IOException {
         return Result.ok(uploadService.uploadChunk(
-                userId, uploadId, chunkIndex, chunkMd5, request.getInputStream()));
+                userId, uploadId, chunkIndex, chunkMd5, request.getInputStream(),
+                // 原始二进制请求体的 Content-Length 就是分片大小，直接透传给存储层。
+                // chunked 传输时它是 -1，存储层会退化成先落临时文件再上传
+                request.getContentLengthLong()));
     }
 
     /** 合并分片。重复调用是幂等的，返回 reused=true 表示文件此前已合并完成 */

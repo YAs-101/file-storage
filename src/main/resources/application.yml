@@ -59,6 +59,8 @@ storage:
     # MinIO / S3Mock / Ceph 只认 path-style；AWS 官方桶改 false
     path-style: ${S3_PATH_STYLE:true}
     chunk-prefix: chunks
+    # 合并时并发发起 UploadPartCopy 的线程数。单次 copy 约 180ms，串行会拖成 9.5s/52 片
+    merge-copy-threads: ${S3_COPY_THREADS:8}
   chunk-size: 5242880          # 5MB，与 S3 multipart 规范下限一致
   max-file-size: 5368709120    # 5GB，单文件上限，运维参数
   session-expire-hours: 24

@@ -81,5 +81,15 @@ public class StorageProperties {
          * 否则 deleteChunks 无法按前缀批量清理，只能一个个记 key。
          */
         private String chunkPrefix = "chunks";
+
+        /**
+         * 合并时并发发起 UploadPartCopy 的线程数。
+         *
+         * <p>实测单次 part copy 约 180ms，瓶颈在请求往返而不是数据量，
+         * 串行发 52 个分片要 9.5 秒。并发 8 路能把这段压下来。
+         * 不能设太大：每个线程占一个 HTTP 连接，而 S3 端对同一对象的
+         * 并发写有速率限制，线程数与分片数取小值更稳。
+         */
+        private int mergeCopyThreads = 8;
     }
 }

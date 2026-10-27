@@ -127,7 +127,7 @@ public class UploadServiceImpl implements UploadService {
 
     @Override
     public ChunkUploadResponse uploadChunk(Long userId, String uploadId, int chunkIndex,
-                                           String chunkMd5, InputStream body) {
+                                           String chunkMd5, InputStream body, long contentLength) {
         UploadTask task = taskMapper.selectOne(Wrappers.<UploadTask>lambdaQuery()
                 .eq(UploadTask::getUploadId, uploadId)
                 .last("LIMIT 1"));
@@ -163,7 +163,7 @@ public class UploadServiceImpl implements UploadService {
         MessageDigest digest = Md5Utils.newDigest();
         long written;
         try (DigestInputStream in = new DigestInputStream(body, digest)) {
-            written = storage.saveChunk(uploadId, chunkIndex, in);
+            written = storage.saveChunk(uploadId, chunkIndex, in, contentLength);
         } catch (IOException e) {
             throw new BizException(ResultCode.STORAGE_ERROR, "读取请求体失败: " + e.getMessage());
         }

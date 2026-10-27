@@ -18,9 +18,13 @@ public interface FileStorage {
      * 保存一个分片。同一 (uploadId, chunkIndex) 重复调用必须覆盖而非追加，
      * 这样重传分片天然幂等。
      *
+     * @param contentLength 请求体声明的字节数，未知时传 -1。
+     *                      S3 的 PutObject 必须带 Content-Length，拿到它就能直接把流
+     *                      转发给存储，省掉「先落本地临时文件再上传」的一次往返。
+     *                      本地实现用不到这个参数。
      * @return 实际写入的字节数，调用方用它和期望大小比对
      */
-    long saveChunk(String uploadId, int chunkIndex, InputStream in);
+    long saveChunk(String uploadId, int chunkIndex, InputStream in, long contentLength);
 
     boolean chunkExists(String uploadId, int chunkIndex);
 

@@ -20,10 +20,13 @@ public interface UploadService {
     /**
      * 接收一个分片。请求体直接是二进制流，不回源到内存。
      *
-     * @param chunkMd5 可选，传了就校验；前端不传则只做大小校验
+     * @param chunkMd5      可选，传了就校验；前端不传则只做大小校验
+     * @param contentLength 请求体声明的字节数，-1 表示未知（chunked 传输）。
+     *                      透传给存储层：S3 的 PutObject 必须带长度，
+     *                      拿到长度才能流式转发而不必先落本地临时文件。
      */
     ChunkUploadResponse uploadChunk(Long userId, String uploadId, int chunkIndex,
-                                    String chunkMd5, InputStream body);
+                                    String chunkMd5, InputStream body, long contentLength);
 
     /**
      * 合并分片并落库。三层幂等保护：
