@@ -11,6 +11,8 @@ import org.springframework.http.MediaTypeFactory;
  * @param size        物理文件字节数，即 Range 的 total
  * @param md5         整文件 MD5，同时充当 ETag
  * @param objectKey   存储层对象键
+ * @param storageType 对象所在的存储后端。下载必须按它取实现——多后端共存时，
+ *                    按当前配置的后端去找一个存在老后端上的对象，只会得到 404
  * @param contentType 文件类型，为空时按文件名推断
  */
 public record DownloadTarget(
@@ -19,6 +21,7 @@ public record DownloadTarget(
         long size,
         String md5,
         String objectKey,
+        String storageType,
         String contentType) {
 
     /**

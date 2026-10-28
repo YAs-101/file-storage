@@ -12,7 +12,7 @@ import com.ys101.storage.entity.UserFile;
 import com.ys101.storage.mapper.FileInfoMapper;
 import com.ys101.storage.mapper.UserFileMapper;
 import com.ys101.storage.service.FileService;
-import com.ys101.storage.storage.FileStorage;
+import com.ys101.storage.storage.StorageRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -37,7 +37,7 @@ public class FileServiceImpl implements FileService {
 
     private final UserFileMapper userFileMapper;
     private final FileInfoMapper fileInfoMapper;
-    private final FileStorage storage;
+    private final StorageRegistry registry;
 
     @Override
     public List<FileItemVO> list(Long userId, int limit, int offset) {
@@ -83,6 +83,7 @@ public class FileServiceImpl implements FileService {
                 fi.getFileSize(),
                 fi.getFileMd5(),
                 fi.getObjectKey(),
+                fi.getStorageType(),
                 fi.getContentType());
     }
 
@@ -136,9 +137,9 @@ public class FileServiceImpl implements FileService {
         int remaining = fi.getRefCount() == null ? 0 : fi.getRefCount();
         boolean orphan = remaining == 0;
         if (orphan) {
-            deleteObjectAfterCommit(fi.getObjectKey());
-            log.info("引用归零，物理对象已安排删除 userFileId={} fileId={} objectKey={}",
-                    userFileId, fileId, fi.getObjectKey());
+            deleteObjectAfterCommit(fi.getStorageType(), fi.getObjectKey());
+            log.info("引用归零，物理对象已安排删除 userFileId={} fileId={} storage={} objectKey={}",
+                    userFileId, fileId, fi.getStorageType(), fi.getObjectKey());
         } else {
             log.info("引用未归零，保留物理对象 userFileId={} fileId={} remaining={}",
                     userFileId, fileId, remaining);
@@ -159,12 +160,25 @@ public class FileServiceImpl implements FileService {
      * 「可用」，磁盘上文件却没了。用户能看到它、能点下载、拿到的却是 404，
      * 而且没有任何自愈机制，唯一办法是重新上传一遍。
      *
+     * <p>删除要按记录自己声明的后端来做。按当前配置的后端删有两个后果：
+     * 删不掉真对象（老后端上的还留着，物理泄漏），以及在错误的后端上删掉一个
+     * 同 key 的对象——objectKey 由 MD5 决定，两个后端上完全可能是同一个 key。
+     *
      * <p>代价是 afterCommit 已脱离事务，删对象失败无法回滚，只能记日志，
      * 留下一条 status=2 但对象仍在的孤儿记录。清理这类残留需要扫描
      * file_info 中 status=2 而 objectExists 为真的记录，M3 再补。
      */
-    private void deleteObjectAfterCommit(String objectKey) {
-        Runnable task = () -> storage.deleteObject(objectKey);
+    private void deleteObjectAfterCommit(String storageType, String objectKey) {
+        Runnable task = () -> {
+            try {
+                registry.of(storageType).deleteObject(objectKey);
+            } catch (RuntimeException e) {
+                // 事务已提交，这里抛出去只会让调用方收到 500，而记录其实已经删了。
+                // 记下来交给 audit 脚本核对，比让接口报错更诚实
+                log.error("删除物理对象失败 storage={} objectKey={}（记录已标记删除，需人工核对）: {}",
+                        storageType, objectKey, e.getMessage());
+            }
+        };
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             task.run();
             return;

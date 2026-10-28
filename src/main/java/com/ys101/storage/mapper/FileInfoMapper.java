@@ -3,7 +3,11 @@ package com.ys101.storage.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.ys101.storage.entity.FileInfo;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+
+import java.util.List;
+import java.util.Map;
 
 public interface FileInfoMapper extends BaseMapper<FileInfo> {
 
@@ -49,4 +53,14 @@ public interface FileInfoMapper extends BaseMapper<FileInfo> {
     int revive(@Param("id") Long id,
                @Param("objectKey") String objectKey,
                @Param("storageType") String storageType);
+
+    /**
+     * 按后端统计可用记录。启动自检用，判断「库里有哪些后端的数据」——
+     * 一个记录所属的后端没装配，那些文件在本进程内就是不可读的，必须提前说出来。
+     */
+    @Select("SELECT storage_type AS storageType, COUNT(*) AS cnt, "
+            + "COALESCE(SUM(file_size), 0) AS bytes "
+            + "FROM file_info WHERE status = 1 "
+            + "GROUP BY storage_type ORDER BY cnt DESC")
+    List<Map<String, Object>> statAvailableByStorage();
 }

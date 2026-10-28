@@ -8,7 +8,7 @@ import com.ys101.storage.dto.DeleteFileResponse;
 import com.ys101.storage.dto.DownloadTarget;
 import com.ys101.storage.dto.FileItemVO;
 import com.ys101.storage.service.FileService;
-import com.ys101.storage.storage.FileStorage;
+import com.ys101.storage.storage.StorageRegistry;
 import com.ys101.storage.util.ByteRange;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -36,7 +36,7 @@ import java.util.List;
 public class FileController {
 
     private final FileService fileService;
-    private final FileStorage storage;
+    private final StorageRegistry registry;
     private final ObjectMapper objectMapper;
 
     /** 文件列表。分页用 limit/offset 而不是页码，前端做无限滚动更直接 */
@@ -141,9 +141,11 @@ public class FileController {
         //    数据库说文件可用、磁盘上对象却没了（人工删了目录、挂载掉了）这种情况必须在这里暴露，
         //    此时响应还没设长度、也没提交，能干净地改写成错误响应；晚一步就只能发出一个
         //    声明了长度却写不满的响应，客户端会一直等到超时。
+        //    按记录声明的后端取实现，不是按当前配置。多后端共存时，用当前配置去
+        //    找一个存在老后端上的对象只会得到 404，而文件其实好端端地在另一处
         InputStream in;
         try {
-            in = storage.openRange(target.objectKey(), offset, length);
+            in = registry.of(target.storageType()).openRange(target.objectKey(), offset, length);
         } catch (BizException e) {
             resp.reset();
             log.error("对象缺失 userFileId={} objectKey={}: {}",
@@ -196,8 +198,10 @@ public class FileController {
         if (resolved != null && resolved.isError()) {
             status = resolved;
         } else if (code == ResultCode.STORAGE_ERROR.getCode()
+                || code == ResultCode.STORAGE_UNAVAILABLE.getCode()
                 || code == ResultCode.INTERNAL_ERROR.getCode()) {
-            // 磁盘不可读、对象丢失属于服务端故障，给 400 会让客户端以为是自己的问题
+            // 磁盘不可读、对象丢失、记录所属后端没装配——都是服务端故障，
+            // 给 400 会让客户端以为是自己的请求有问题
             status = HttpStatus.INTERNAL_SERVER_ERROR;
         } else {
             status = HttpStatus.BAD_REQUEST;

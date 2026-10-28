@@ -54,12 +54,10 @@ public class MergeVerifier {
     private static final Pattern SINGLE_ETAG = Pattern.compile("[0-9a-fA-F]{32}");
 
     private final StorageProperties props;
-    private final FileStorage storage;
     private final UploadChunkMapper chunkMapper;
 
-    public MergeVerifier(StorageProperties props, FileStorage storage, UploadChunkMapper chunkMapper) {
+    public MergeVerifier(StorageProperties props, UploadChunkMapper chunkMapper) {
         this.props = props;
-        this.storage = storage;
         this.chunkMapper = chunkMapper;
     }
 
@@ -72,7 +70,12 @@ public class MergeVerifier {
     public record Verification(boolean ok, String md5, String evidence, String detail) {
     }
 
-    public Verification verify(UploadTask task, String objectKey, MergeResult merged) {
+    /**
+     * @param storage 本次合并所用的后端实例。合并产物只存在于这一个后端上，
+     *                所以校验必须用同一个实例读回——按配置后端去读会在多后端共存时读空
+     */
+    public Verification verify(UploadTask task, String objectKey, MergeResult merged,
+                               FileStorage storage) {
         String declared = declaredMd5(task);
 
         // 大小是最便宜的校验，任何模式都先做：ETag 只覆盖「分片是否原样拼起来」，
@@ -91,7 +94,7 @@ public class MergeVerifier {
             return new Verification(true, declared, "未校验(never)", null);
         }
         if (mode == StorageProperties.VerifyMode.ALWAYS) {
-            return byFullRead(declared, objectKey);
+            return byFullRead(declared, objectKey, storage);
         }
 
         // AUTO：优先用后端给的指纹
@@ -99,7 +102,7 @@ public class MergeVerifier {
         String expected = etag == null ? null : expectedEtag(task, etag);
         if (expected == null) {
             log.debug("后端未提供可核对的产物指纹 objectKey={} etag={}，退回全量读回", objectKey, etag);
-            return byFullRead(declared, objectKey);
+            return byFullRead(declared, objectKey, storage);
         }
         if (expected.equalsIgnoreCase(etag)) {
             return new Verification(true, declared, "ETag(" + etag + ")", null);
@@ -109,10 +112,10 @@ public class MergeVerifier {
         // 既不误杀合法后端，也不放过真的损坏
         log.warn("ETag 与本地推算不一致 objectKey={} etag={} expected={}，改用全量读回裁决",
                 objectKey, etag, expected);
-        return byFullRead(declared, objectKey);
+        return byFullRead(declared, objectKey, storage);
     }
 
-    private Verification byFullRead(String declared, String objectKey) {
+    private Verification byFullRead(String declared, String objectKey, FileStorage storage) {
         String actual;
         try (InputStream in = storage.open(objectKey)) {
             actual = Md5Utils.of(in);

@@ -3,7 +3,11 @@ package com.ys101.storage.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.ys101.storage.entity.UploadTask;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+
+import java.util.List;
+import java.util.Map;
 
 public interface UploadTaskMapper extends BaseMapper<UploadTask> {
 
@@ -26,4 +30,12 @@ public interface UploadTaskMapper extends BaseMapper<UploadTask> {
     /** 合并失败回退到上传中，允许重试；retry_count 已在 CAS 时自增 */
     @Update("UPDATE upload_task SET status = 1 WHERE upload_id = #{uploadId} AND status = 2")
     int rollbackToUploading(@Param("uploadId") String uploadId);
+
+    /**
+     * 统计「还能续传」的会话按后端分布。这些会话的分片已经落在某个后端上，
+     * 切配置后如果那个后端没装配，续传就会在写入分片时失败。
+     */
+    @Select("SELECT storage_type AS storageType, COUNT(*) AS cnt FROM upload_task "
+            + "WHERE status IN (0, 1, 2) GROUP BY storage_type ORDER BY cnt DESC")
+    List<Map<String, Object>> statInFlightByStorage();
 }

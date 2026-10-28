@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS upload_task (
   chunk_total INT UNSIGNED    NOT NULL COMMENT '分片总数 = ceil(file_size / chunk_size)',
   status      TINYINT         NOT NULL DEFAULT 0
               COMMENT '0初始化 1上传中 2合并中 3成功 4失败 5已取消 6已过期',
+  storage_type VARCHAR(16)    NOT NULL DEFAULT 'LOCAL'
+              COMMENT '会话所属存储后端。分片写在哪里由它决定，与当前 storage.type 配置解耦——否则切配置后进行中的会话分片全找不着',
   retry_count TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '合并重试次数，上限 3',
   expire_at   DATETIME        NOT NULL COMMENT '会话过期时间，默认 24h',
   created_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,

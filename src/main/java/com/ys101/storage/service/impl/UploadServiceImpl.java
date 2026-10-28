@@ -20,6 +20,7 @@ import com.ys101.storage.service.MergeVerifier;
 import com.ys101.storage.service.UploadService;
 import com.ys101.storage.storage.FileStorage;
 import com.ys101.storage.storage.MergeResult;
+import com.ys101.storage.storage.StorageRegistry;
 import com.ys101.storage.util.Md5Utils;
 import com.ys101.storage.util.ObjectKeys;
 import lombok.RequiredArgsConstructor;
@@ -56,7 +57,7 @@ public class UploadServiceImpl implements UploadService {
     private final FileInfoMapper fileInfoMapper;
     private final UserFileMapper userFileMapper;
     private final StorageProperties props;
-    private final FileStorage storage;
+    private final StorageRegistry registry;
     private final MergeVerifier mergeVerifier;
     private final StringRedisTemplate redis;
 
@@ -161,6 +162,11 @@ public class UploadServiceImpl implements UploadService {
 
         long expected = expectedChunkSize(task, chunkIndex);
 
+        // 分片必须落在会话建立时所在的后端。切过 storage.type 之后，进行中的会话
+        // 分片散在旧后端，续传判断只查数据库记录、不看物理位置，写错后端会让
+        // 「已传 3/50」变成永远合并不出来的假进度
+        FileStorage storage = registry.of(task.getStorageType());
+
         // 流式落盘，同时算分片 MD5：全过程不把分片读进 byte[]，
         // 否则 5MB × 8 并发的堆占用会直接把 young gc 打满
         MessageDigest digest = Md5Utils.newDigest();
@@ -253,6 +259,8 @@ public class UploadServiceImpl implements UploadService {
 
     private CompleteUploadResponse doMerge(UploadTask task, long begin) {
         String uploadId = task.getUploadId();
+        FileStorage storage = registry.of(task.getStorageType());
+        String storageType = StorageRegistry.normalize(task.getStorageType());
 
         // 第二层：状态机 CAS，只有能把 1(上传中) 推到 2(合并中) 的请求才有资格合并
         int cas = taskMapper.casToMerging(uploadId);
@@ -307,7 +315,7 @@ public class UploadServiceImpl implements UploadService {
             // 3) 校验合并结果。策略见 StorageProperties.VerifyMode：
             //    本地磁盘退回全量读回，S3 用 merge 返回的 ETag 与本地推算值比对（零传输）。
             //    失败要删产物并回滚会话状态，否则重试会撞上「合并中」永远出不来
-            MergeVerifier.Verification verify = mergeVerifier.verify(task, objectKey, merged);
+            MergeVerifier.Verification verify = mergeVerifier.verify(task, objectKey, merged, storage);
             if (!verify.ok()) {
                 storage.deleteObject(objectKey);
                 taskMapper.rollbackToUploading(uploadId);
@@ -316,7 +324,7 @@ public class UploadServiceImpl implements UploadService {
             String actualMd5 = verify.md5();
 
             // 4) 第三层：唯一索引兜底
-            FileInfo fileInfo = writeFileInfo(task, objectKey, actualMd5, storedSize);
+            FileInfo fileInfo = writeFileInfo(task, objectKey, actualMd5, storedSize, storage, storageType);
 
             UserFile uf = new UserFile();
             uf.setUserId(task.getUserId());
@@ -328,7 +336,7 @@ public class UploadServiceImpl implements UploadService {
             taskMapper.markSuccess(uploadId);
 
             // 5) 临时分片是纯冗余数据，删不掉也不影响正确性，所以不放进失败回滚路径
-            cleanupChunks(uploadId);
+            cleanupChunks(uploadId, storage);
 
             log.info("合并完成 uploadId={} fileId={} size={} md5={} 校验={} 用时 {}ms",
                     uploadId, fileInfo.getId(), storedSize, actualMd5, verify.evidence(), elapsedMs(begin));
@@ -363,7 +371,7 @@ public class UploadServiceImpl implements UploadService {
      * <p>整段吞异常：文件此时已经可用，清理失败不该让客户端收到 500。代价是留下残留，
      * 靠 audit 脚本定期核对，而不是把可用性押在清理上。
      */
-    private void cleanupChunks(String uploadId) {
+    private void cleanupChunks(String uploadId, FileStorage storage) {
         try {
             storage.deleteChunks(uploadId);
             int removed = chunkMapper.deleteByUploadId(uploadId);
@@ -377,12 +385,13 @@ public class UploadServiceImpl implements UploadService {
      * 写物理文件记录。uk(file_md5, file_size) 让并发合并最终只留一条：
      * 抢输的请求捕获到重复键后复用已有记录，并把自己多写的对象删掉。
      */
-    private FileInfo writeFileInfo(UploadTask task, String objectKey, String md5, long size) {
+    private FileInfo writeFileInfo(UploadTask task, String objectKey, String md5, long size,
+                                   FileStorage storage, String storageType) {
         FileInfo fi = new FileInfo();
         fi.setFileMd5(md5);
         fi.setFileSize(size);
         fi.setObjectKey(objectKey);
-        fi.setStorageType(storage.type());
+        fi.setStorageType(storageType);
         fi.setRefCount(1);
         fi.setStatus(Status.File.AVAILABLE);
         try {
@@ -402,7 +411,7 @@ public class UploadServiceImpl implements UploadService {
             // 此时物理对象可能刚被 afterCommit 删除，但我们重新合并出的这份落在同一个
             // objectKey 上（objectKey 由 md5 决定），等于顺手把对象恢复了，记录也该改回可用。
             if (Objects.equals(exist.getStatus(), Status.File.DELETED)) {
-                boolean revived = fileInfoMapper.revive(exist.getId(), objectKey, storage.type()) == 1;
+                boolean revived = fileInfoMapper.revive(exist.getId(), objectKey, storageType) == 1;
                 if (!revived) {
                     // 另一个请求抢先复活了，它已经加过计数，这里补自己的那一次
                     fileInfoMapper.incrementRefCount(exist.getId());
@@ -414,8 +423,14 @@ public class UploadServiceImpl implements UploadService {
                 return refreshed == null ? exist : refreshed;
             }
 
-            // 已有记录说明物理对象本来就在，自己刚合并出的那份是多余的
-            if (!exist.getObjectKey().equals(objectKey)) {
+            // 已有记录说明物理对象本来就在，自己刚合并出的那份是多余的。
+            // 判断「是不是同一份」必须同时比 key 与后端：objectKey 由 MD5 决定，
+            // 两个后端上完全可能挂着同一个 key，只看 key 会把这次真的多出来的
+            // 那份留在当前后端上，库里的引用却指向另一个后端——空间泄漏且查不出来
+            String existType = StorageRegistry.normalize(exist.getStorageType());
+            boolean sameObject = exist.getObjectKey().equals(objectKey)
+                    && (existType.isEmpty() || existType.equals(storageType));
+            if (!sameObject) {
                 storage.deleteObject(objectKey);
             }
             fileInfoMapper.incrementRefCount(exist.getId());
@@ -552,6 +567,9 @@ public class UploadServiceImpl implements UploadService {
         t.setChunkSize(chunkSize);
         t.setChunkTotal(chunkTotal);
         t.setStatus(Status.Upload.INIT);
+        // 会话归属只看建立时的配置。之后切 storage.type 也不影响这个会话去哪个后端，
+        // 否则半截分片留在旧后端、续传记录却在库里，会话永远合并不出来
+        t.setStorageType(registry.defaultType());
         t.setRetryCount(0);
         t.setExpireAt(LocalDateTime.now().plusHours(props.getSessionExpireHours()));
         taskMapper.insert(t);
