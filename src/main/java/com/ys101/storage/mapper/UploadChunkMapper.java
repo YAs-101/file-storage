@@ -2,6 +2,7 @@ package com.ys101.storage.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.ys101.storage.entity.UploadChunk;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -43,4 +44,16 @@ public interface UploadChunkMapper extends BaseMapper<UploadChunk> {
     @Select("SELECT chunk_md5 FROM upload_chunk "
             + "WHERE upload_id = #{uploadId} AND status = 1 ORDER BY chunk_index")
     List<String> selectChunkMd5s(@Param("uploadId") String uploadId);
+
+    /**
+     * 合并成功后回收分片记录。
+     *
+     * <p>物理分片由 {@code FileStorage.deleteChunks} 删，数据库记录由这里删——两者必须成对，
+     * 只删物理侧会让 upload_chunk 只增不减（历史欠账 1470 条就是这么攒出来的）。
+     *
+     * <p>删记录放在物理删除之后：物理删失败时记录还在，凭 upload_id 仍能定位残留；
+     * 反过来先删记录，一旦物理删除失败就永久失去线索，只能靠全桶扫描才能发现。
+     */
+    @Delete("DELETE FROM upload_chunk WHERE upload_id = #{uploadId}")
+    int deleteByUploadId(@Param("uploadId") String uploadId);
 }

@@ -328,7 +328,7 @@ public class UploadServiceImpl implements UploadService {
             taskMapper.markSuccess(uploadId);
 
             // 5) 临时分片是纯冗余数据，删不掉也不影响正确性，所以不放进失败回滚路径
-            storage.deleteChunks(uploadId);
+            cleanupChunks(uploadId);
 
             log.info("合并完成 uploadId={} fileId={} size={} md5={} 校验={} 用时 {}ms",
                     uploadId, fileInfo.getId(), storedSize, actualMd5, verify.evidence(), elapsedMs(begin));
@@ -350,6 +350,26 @@ public class UploadServiceImpl implements UploadService {
             log.warn("合并失败 uploadId={} 用时 {}ms 原因: {}",
                     uploadId, elapsedMs(begin), e.getMessage());
             throw e;
+        }
+    }
+
+    /**
+     * 回收临时分片：物理分片 + 数据库记录。
+     *
+     * <p>两件事都做才算完整。只删物理侧的话，{@code upload_chunk} 会只增不减——M2 收尾时
+     * 库里 1488 条记录有 1470 条来自已成功的任务，占 98.8%。分片记录在任务成功之后
+     * 唯一的用途就没了（续传判断只对未完成任务有意义），留着只会让表无限膨胀。
+     *
+     * <p>整段吞异常：文件此时已经可用，清理失败不该让客户端收到 500。代价是留下残留，
+     * 靠 audit 脚本定期核对，而不是把可用性押在清理上。
+     */
+    private void cleanupChunks(String uploadId) {
+        try {
+            storage.deleteChunks(uploadId);
+            int removed = chunkMapper.deleteByUploadId(uploadId);
+            log.debug("分片回收 uploadId={} 删除记录 {} 条", uploadId, removed);
+        } catch (RuntimeException e) {
+            log.warn("分片回收失败 uploadId={}（文件已可用，仅留残留）: {}", uploadId, e.getMessage());
         }
     }
 
