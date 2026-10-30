@@ -146,6 +146,17 @@ def main():
     assert st == 404, f"下载不存在文件应为 HTTP 404，实际 {st}"
     ok(f"下载不存在的文件 → HTTP {st} code={res.get('code')}")
 
+    # 参数类型错发生在进入 Controller 之前，走的是全局异常处理。如果这里回 200，
+    # 浏览器/下载器会把 {"code":400,...} 这段 JSON 当成文件内容存下来，
+    # 用户看到的是「下载成功但文件打不开」，而不是「参数错了」。
+    st, res, hdr = c.call("GET", "/api/file/abc/download")
+    assert st == 400, f"下载接口路径变量类型错误应为 HTTP 400，实际 {st}（{res.get('msg')}）"
+    ok(f"下载接口参数类型错误 → HTTP {st} code={res.get('code')}")
+
+    st, res, hdr = c.call("GET", "/api/nope/download")
+    assert st == 404, f"不存在的下载接口应为 HTTP 404，实际 {st}"
+    ok(f"不存在的下载接口 → HTTP {st} code={res.get('code')}")
+
     print()
     print("=" * 62)
     print("五、请求链路标识")

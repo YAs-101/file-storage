@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import time
 import urllib.error
 import urllib.request
@@ -89,6 +90,68 @@ def ok(label):
     print(f"  ✅ {label}")
 
 
+NOISE = random.Random(20261030).randbytes(1000 * 1000 * 3)
+
+
+def _build_pdf(pad, salt):
+    """拼一个单页 PDF，内容是一张 1000x1000 的噪声图，pad 字节的注释用于对齐总长。
+
+    salt 会写进头部注释：让每次运行的字节内容都不同。否则第二次跑就命中秒传
+    （init 返回 uploadId=None），而脚本后续仍按「需要上传」的路径走，直接断言失败。
+    """
+    buf = bytearray()
+    offs = {}
+
+    def obj(num, raw):
+        offs[num] = len(buf)
+        buf.extend(b"%d 0 obj\n" % num)
+        buf.extend(raw)
+
+    buf.extend(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    buf.extend(b"%" + salt.hex().encode() + b"\n")
+
+    obj(1, b"<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+    obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+    obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+           b"/Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>\nendobj\n")
+
+    content = b"q 400 0 0 400 100 100 cm /Im0 Do Q\n"
+    if pad > 0:
+        # 内容流里的空白字符是合法的记号分隔符，渲染器直接跳过。
+        # 用它对齐比写 % 注释稳妥：注释必须被换行终止，pad 剩 1 字节时无处安放。
+        content += b"\n" * pad
+    obj(4, b"<< /Length %d >>\nstream\n" % len(content) + content + b"endstream\nendobj\n")
+
+    obj(5, b"<< /Type /XObject /Subtype /Image /Width 1000 /Height 1000 "
+           b"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Length %d >>\nstream\n" % len(NOISE)
+           + NOISE + b"\nendstream\nendobj\n")
+
+    xref = len(buf)
+    buf.extend(b"xref\n0 6\n0000000000 65535 f \n")
+    for i in range(1, 6):
+        buf.extend(b"%010d 00000 n \n" % offs[i])
+    buf.extend(b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref)
+    return bytes(buf)
+
+
+def make_pdf(target_size):
+    """生成恰好 target_size 字节、结构合法的 PDF。
+
+    这里不用 os.urandom 裸造数据。文件名是 .pdf、内容却是随机字节时，任何阅读器都会
+    报「文件已损坏」——人工点下载做验证时，这个现象会被误判成下载链路把文件写坏了，
+    实际是测试数据本身不是 PDF。用真 PDF 造数据，「下下来能打开」才有验证意义。
+    """
+    salt = os.urandom(8)
+    pad = 0
+    for _ in range(8):
+        data = _build_pdf(pad, salt)
+        diff = target_size - len(data)
+        if diff == 0:
+            return data
+        pad = max(0, pad + diff)
+    raise RuntimeError(f"无法把 PDF 对齐到 {target_size} 字节，当前 {len(data)}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=os.environ.get("FS_BASE", "http://127.0.0.1:8080"))
@@ -96,8 +159,9 @@ def main():
     c = Client(args.base)
 
     # ---------------------------------------------------------------- 准备
-    size = 3 * 1024 * 1024
-    payload = os.urandom(size)
+    payload = make_pdf(3 * 1024 * 1024)
+    size = len(payload)
+    assert payload[:5] == b"%PDF-" and b"%%EOF" in payload[-64:], "样本必须是合法 PDF"
     md5 = md5_of_bytes(payload)
 
     print("=" * 62)
