@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>文件存储服务</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --line: #e2e5ea;
+    --text: #1f2328;
+    --muted: #6b7280;
+    --primary: #1b4f8f;
+    --primary-hover: #16406f;
+    --ok: #16794c;
+    --warn: #9a6700;
+    --err: #b42318;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 28px 20px 64px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.2px; }
+  .sub { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .uid { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+  .uid input {
+    width: 64px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+    font: inherit; font-size: 12.5px; text-align: center; background: #fff; color: var(--text);
+  }
+  .uid input:focus { outline: 2px solid rgba(27,79,143,.18); border-color: var(--primary); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
+
+  #drop {
+    border: 1.5px dashed #c8cfd8; border-radius: var(--radius);
+    background: #fbfcfd; padding: 34px 20px; text-align: center;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  #drop:hover, #drop.over { border-color: var(--primary); background: #f2f6fb; }
+  #drop .t { font-size: 14px; font-weight: 500; }
+  #drop .d { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  #drop input { display: none; }
+
+  h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: none;
+       letter-spacing: .3px; margin: 28px 0 10px; }
+
+  .job { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .job:last-child { border-bottom: 0; }
+  .job-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .job-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-size { color: var(--muted); font-size: 12px; flex: none; }
+  .bar { height: 5px; background: #eceff3; border-radius: 3px; overflow: hidden; margin: 10px 0 8px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--primary); transition: width .2s; }
+  .bar > i.done { background: var(--ok); }
+  .bar > i.fail { background: var(--err); }
+  .job-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .job-state { font-size: 12.5px; color: var(--muted); }
+  .job-state.ok { color: var(--ok); }
+  .job-state.err { color: var(--err); }
+  .job-state.warn { color: var(--warn); }
+
+  button {
+    font: inherit; font-size: 12.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; color: var(--text); transition: .12s;
+  }
+  button:hover { border-color: #c2c9d2; background: #f7f8fa; }
+  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  button.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+  button.danger:hover { border-color: #e3b3ae; color: var(--err); background: #fdf4f3; }
+  button:disabled { opacity: .45; cursor: default; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; font-weight: 600; color: var(--muted); background: #fbfcfd; }
+  th:first-child { border-top-left-radius: var(--radius); }
+  th:last-child { border-top-right-radius: var(--radius); }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: #fafbfc; }
+  td.name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.act, th.act { text-align: right; white-space: nowrap; }
+  td.act button + button { margin-left: 6px; }
+  code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+
+  .empty { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+  .hidden { display: none !important; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(12px);
+    background: #1f2328; color: #fff; padding: 9px 16px; border-radius: 7px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: .2s; max-width: 80vw;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { background: #8f2118; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>文件存储服务</h1>
+      <div class="sub">分片上传 · 断点续传 · 秒传 · 多后端存储</div>
+    </div>
+    <label class="uid">用户 ID <input id="uid" type="number" min="1" value="1"></label>
+  </header>
+
+  <div id="drop">
+    <div class="t">拖拽文件到此处，或点击选择</div>
+    <div class="d">单个文件上限 5 GB · 分片大小由服务端决定 · 同一文件重复拖入会自动续传</div>
+    <input id="picker" type="file" multiple>
+  </div>
+
+  <div id="queue-wrap" class="hidden">
+    <h2>上传任务</h2>
+    <div class="card" id="queue"></div>
+  </div>
+
+  <h2>我的文件</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>文件名</th>
+          <th class="num">大小</th>
+          <th>MD5</th>
+          <th>创建时间</th>
+          <th class="act">操作</th>
+        </tr>
+      </thead>
+      <tbody id="files"></tbody>
+    </table>
+    <div class="empty hidden" id="files-empty">还没有文件</div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+   * 增量 MD5
+   *
+   * 为什么不用 crypto.subtle.digest：它只接受一次性完整输入，1 GB 文件
+   * 塞进 ArrayBuffer 会直接把标签页打爆。而 MD5 是不可复合的（不能由分片
+   * 哈希拼接），所以要自己实现一个支持 update() 的流式版本。
+   * ============================================================ */
+  var MD5_S = [7,12,17,22, 7,12,17,22, 7,12,17,22, 7,12,17,22,
+               5, 9,14,20, 5, 9,14,20, 5, 9,14,20, 5, 9,14,20,
+               4,11,16,23, 4,11,16,23, 4,11,16,23, 4,11,16,23,
+               6,10,15,21, 6,10,15,21, 6,10,15,21, 6,10,15,21];
+  var MD5_K = new Int32Array(64);
+  for (var i = 0; i < 64; i++) {
+    MD5_K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
+  }
+
+  function md5Block(st, b, off) {
+    var a = st[0], bb = st[1], c = st[2], d = st[3];
+    for (var i = 0; i < 64; i++) {
+      var f, g;
+      if (i < 16)      { f = (bb & c) | (~bb & d); g = i; }
+      else if (i < 32) { f = (d & bb) | (~d & c); g = (5 * i + 1) & 15; }
+      else if (i < 48) { f = bb ^ c ^ d;          g = (3 * i + 5) & 15; }
+      else             { f = c ^ (bb | ~d);       g = (7 * i) & 15; }
+      var j = off + g * 4;
+      var m = b[j] | (b[j + 1] << 8) | (b[j + 2] << 16) | (b[j + 3] << 24);
+      var x = (a + f + MD5_K[i] + m) | 0;
+      var s = MD5_S[i];
+      a = d; d = c; c = bb;
+      bb = (bb + ((x << s) | (x >>> (32 - s)))) | 0;
+    }
+    st[0] = (st[0] + a) | 0;
+    st[1] = (st[1] + bb) | 0;
+    st[2] = (st[2] + c) | 0;
+    st[3] = (st[3] + d) | 0;
+  }
+
+  function Md5() {
+    this.st = new Int32Array([0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476]);
+    this.buf = new Uint8Array(64);
+    this.bufLen = 0;
+    this.total = 0;   // 已喂入的字节数，可能超过 2^32
+  }
+  Md5.prototype.update = function (data) {
+    var pos = 0;
+    this.total += data.length;
+    if (this.bufLen > 0) {
+      var take = Math.min(64 - this.bufLen, data.length);
+      this.buf.set(data.subarray(0, take), this.bufLen);
+      this.bufLen += take;
+      pos = take;
+      if (this.bufLen === 64) { md5Block(this.st, this.buf, 0); this.bufLen = 0; }
+    }
+    while (pos + 64 <= data.length) { md5Block(this.st, data, pos); pos += 64; }
+    if (pos < data.length) {
+      this.buf.set(data.subarray(pos), 0);
+      this.bufLen = data.length - pos;
+    }
+    return this;
+  };
+  Md5.prototype.digest = function () {
+    var bits = this.total * 8;                       // double 精度到 2^53，够用
+    var lo = bits % 4294967296;
+    var hi = Math.floor(bits / 4294967296);
+    var len = this.bufLen < 56 ? 64 : 128;
+    var pad = new Uint8Array(len);
+    pad.set(this.buf.subarray(0, this.bufLen));
+    pad[this.bufLen] = 0x80;
+    var p = len - 8;
+    pad[p]     =  lo         & 255;
+    pad[p + 1] = (lo >>> 8)  & 255;
+    pad[p + 2] = (lo >>> 16) & 255;
+    pad[p + 3] = (lo >>> 24) & 255;
+    pad[p + 4] =  hi         & 255;
+    pad[p + 5] = (hi >>> 8)  & 255;
+    pad[p + 6] = (hi >>> 16) & 255;
+    pad[p + 7] = (hi >>> 24) & 255;
+    for (var i = 0; i < len; i += 64) md5Block(this.st, pad, i);
+    var out = new Uint8Array(16);
+    for (var k = 0; k < 4; k++) {
+      var v = this.st[k];
+      out[k * 4]     =  v         & 255;
+      out[k * 4 + 1] = (v >>> 8)  & 255;
+      out[k * 4 + 2] = (v >>> 16) & 255;
+      out[k * 4 + 3] = (v >>> 24) & 255;
+    }
+    return out;
+  };
+
+  function hex(bytes) {
+    var s = '';
+    for (var i = 0; i < bytes.length; i++) s += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);
+    return s;
+  }
+  function md5Bytes(bytes) { return hex(new Md5().update(bytes).digest()); }
+
+  // 自检：自己实现的哈希算错了整条链路都会静默报废，启动时对一次标准向量
+  (function selfCheck() {
+    var ok1 = md5Bytes(new Uint8Array(0)) === 'd41d8cd98f00b204e9800998ecf8427e';
+    var ok2 = md5Bytes(new TextEncoder().encode('abc')) === '900150983cd24fb0d6963f7d28e17f72';
+    if (!ok1 || !ok2) {
+      console.error('MD5 自检失败', ok1, ok2);
+      toast('页面脚本自检失败：MD5 实现异常，请刷新', true);
+    }
+  })();
+
+  /* ============================================================
+   * 基础工具
+   * ============================================================ */
+  var $ = function (id) { return document.getElementById(id); };
+  var uidEl = $('uid');
+  function uid() { return String(parseInt(uidEl.value, 10) || 1); }
+
+  var toastTimer = null;
+  function toast(msg, isErr) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = 'show' + (isErr ? ' err' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = ''; }, 3200);
+  }
+
+  function fmtSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(2) + ' GB';
+  }
+  function fmtTime(s) {
+    if (!s) return '—';
+    return String(s).replace('T', ' ').slice(0, 16);
+  }
+
+  /**
+   * 统一 API 调用。业务失败也走 HTTP 200，所以不能用 resp.ok 判断成败，
+   * 只看 body 里的 code —— 这是接口约定，前端必须遵守。
+   */
+  function api(method, path, opts) {
+    opts = opts || {};
+    var headers = Object.assign({ 'X-User-Id': uid() }, opts.headers || {});
+    return fetch(path, { method: method, headers: headers, body: opts.body })
+      .then(function (resp) {
+        if (opts.raw) {
+          if (!resp.ok) {
+            return resp.json().catch(function () { return { code: resp.status, msg: 'HTTP ' + resp.status }; })
+              .then(function (j) { throw new Error(j.msg || ('HTTP ' + resp.status)); });
+          }
+          return resp;
+        }
+        return resp.json().then(function (j) {
+          if (j.code !== 0) {
+            var e = new Error(j.msg || ('错误码 ' + j.code));
+            e.code = j.code;
+            throw e;
+          }
+          return j.data;
+        });
+      });
+  }
+
+  /**
+   * 可重试的错误。
+   *
+   * code 为空说明是网络层错误而不是业务响应——限流在请求体传输中途拒绝时，
+   * 服务端来不及吞掉剩余 body 就会断开连接，客户端看到的是「Failed to fetch」
+   * 而不是那个 1011。这类错误同样应该退避重试，否则用户会看到一个假失败。
+   */
+  function retriable(code) {
+    if (code === undefined) return true;
+    return code === 1011 || code === 1005 || code === 1008;
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  /* ============================================================
+   * 上传
+   * ============================================================ */
+  /**
+   * 全局并发池。
+   *
+   * 必须是全局而不是每个任务各 8 路：用户同时拖 4 个文件时，四个任务一起跑就是
+   * 32 个并发分片，直接撞上服务端 12 的限额，会看到一堆 1011 重试。放在全局，
+   * 无论排多少个任务，同时在飞的请求数恒定为 CONCURRENCY。
+   */
+  var CONCURRENCY = 8;
+  var activeSlots = 0;
+  var slotWaiters = [];
+
+  function acquireSlot() {
+    if (activeSlots < CONCURRENCY) { activeSlots++; return Promise.resolve(); }
+    return new Promise(function (res) { slotWaiters.push(res); });
+  }
+  function releaseSlot() {
+    var w = slotWaiters.shift();
+    if (w) w();            // 名额直接转交给等待者，计数器不减
+    else activeSlots--;
+  }
+
+  var HASH_CHUNK = 4 * 1024 * 1024;
+  var jobs = [];
+
+  function renderJob(job) {
+    var el = job.el;
+    el.querySelector('.bar > i').style.width = Math.round(job.progress * 100) + '%';
+    el.querySelector('.bar > i').className = job.state === 'done' ? 'done' : (job.state === 'fail' ? 'fail' : '');
+    var s = el.querySelector('.job-state');
+    s.textContent = job.text;
+    s.className = 'job-state' + (job.state === 'done' ? ' ok' : job.state === 'fail' ? ' err' :
+                                 job.state === 'warn' ? ' warn' : '');
+    el.querySelector('.btn-pause').classList.toggle('hidden', job.state !== 'running');
+    el.querySelector('.btn-resume').classList.toggle('hidden', job.state !== 'paused');
+    el.querySelector('.btn-cancel').classList.toggle('hidden',
+      job.state === 'done' || job.state === 'fail' || job.state === 'canceled');
+  }
+
+  function createJob(file) {
+    var el = document.createElement('div');
+    el.className = 'job';
+    el.innerHTML =
+      '<div class="job-head">' +
+        '<div class="job-name"></div>' +
+        '<div class="job-size">' + fmtSize(file.size) + '</div>' +
+      '</div>' +
+      '<div class="bar"><i></i></div>' +
+      '<div class="job-foot">' +
+        '<div class="job-state"></div>' +
+        '<div>' +
+          '<button class="btn-pause">暂停</button> ' +
+          '<button class="btn-resume hidden">继续</button> ' +
+          '<button class="btn-cancel danger">移除</button>' +
+        '</div>' +
+      '</div>';
+    el.querySelector('.job-name').textContent = file.name;
+    el.querySelector('.job-name').title = file.name;
+    $('queue').appendChild(el);
+    $('queue-wrap').classList.remove('hidden');
+
+    var job = {
+      file: file, el: el, progress: 0, text: '等待中', state: 'running',
+      paused: false, canceled: false, inited: false,
+      uploadId: null, chunkSize: 0, chunkTotal: 0, done: {}
+    };
+    el.querySelector('.btn-pause').onclick = function () {
+      job.paused = true;
+      job.state = 'paused';
+      job.text = '已暂停（在飞分片完成后停止派发）';
+      renderJob(job);
+    };
+    el.querySelector('.btn-resume').onclick = function () {
+      job.paused = false;
+      job.state = 'running';
+      job.text = '继续上传…';
+      renderJob(job);
+      runUpload(job);
+    };
+    el.querySelector('.btn-cancel').onclick = function () {
+      job.canceled = true;
+      job.paused = true;
+      job.state = 'canceled';
+      job.text = '已移除（服务端会话保留，重新拖入可续传）';
+      renderJob(job);
+    };
+    jobs.push(job);
+    renderJob(job);
+    return job;
+  }
+
+  /** 分块读整个文件算 MD5，顺带给出进度——1 GB 文件这里要读几秒，不给进度会像卡死 */
+  function hashFile(file, onProgress) {
+    var m = new Md5();
+    var off = 0;
+    return (function step() {
+      if (off >= file.size) return Promise.resolve(hex(m.digest()));
+      var end = Math.min(off + HASH_CHUNK, file.size);
+      return file.slice(off, end).arrayBuffer().then(function (buf) {
+        m.update(new Uint8Array(buf));
+        off = end;
+        onProgress(off / file.size);
+        return step();
+      });
+    })();
+  }
+
+  function runUpload(job) {
+    if (job.busy) return;
+    job.busy = true;
+    uploadPipeline(job)
+      .catch(function (e) {
+        if (job.canceled) return;
+        job.state = 'fail';
+        job.text = '失败：' + (e && e.message ? e.message : e);
+        toast(job.file.name + ' 上传失败：' + job.text, true);
+      })
+      .finally(function () {
+        job.busy = false;
+        renderJob(job);
+        refreshFiles();
+      });
+  }
+
+  async function uploadPipeline(job) {
+    var file = job.file;
+
+    // 准备阶段只做一次。暂停后恢复如果重算一遍 MD5，1 GB 文件要白等十几秒，
+    // 所以把「算指纹 + init」和「传分片」切成两段，用 job.inited 记住进度
+    if (!job.inited) {
+      // 1) 指纹
+      job.text = '计算指纹 0%';
+      renderJob(job);
+      var fileMd5 = await hashFile(file, function (r) {
+        job.text = '计算指纹 ' + Math.round(r * 100) + '%';
+        renderJob(job);
+      });
+      if (job.canceled) return;
+
+      // 2) init：可能秒传，也可能命中已有会话拿到已上传分片列表
+      job.text = '初始化…';
+      renderJob(job);
+      var init = await withRetry(function () {
+        return api('POST', '/api/upload/init', {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileName: file.name, fileSize: file.size, fileMd5: fileMd5,
+                                 contentType: file.type || null })
+        });
+      });
+      if (job.canceled) return;
+
+      if (init.instant) {
+        job.inited = true;
+        job.progress = 1;
+        job.state = 'done';
+        job.text = '秒传命中（服务端已有相同内容，无需上传）';
+        renderJob(job);
+        return;
+      }
+
+      job.uploadId = init.uploadId;
+      job.chunkSize = init.chunkSize;
+      job.chunkTotal = init.chunkTotal;
+      (init.uploaded || []).forEach(function (i) { job.done[i] = true; });
+      job.inited = true;
+
+      var resumed = Object.keys(job.done).length;
+      if (resumed > 0) {
+        job.text = '断点续传：已有 ' + resumed + '/' + job.chunkTotal + ' 片，补传剩余 ' +
+                   (job.chunkTotal - resumed) + ' 片';
+        renderJob(job);
+        await sleep(600);
+      }
+    }
+
+    // 3) 并发补片
+    await uploadChunks(job);
+    // 暂停不是失败：直接收手，等用户点「继续」再回到这里
+    if (job.canceled || job.paused) return;
+
+    // 4) 合并。1005 表示别人正在合并，退避后重试会拿到 reused=true
+    job.text = '合并分片…';
+    renderJob(job);
+    var done = await withRetry(function () {
+      return api('POST', '/api/upload/' + job.uploadId + '/complete');
+    });
+
+    job.progress = 1;
+    job.state = 'done';
+    job.text = done.reused ? '完成（复用已合并的文件）' : '完成';
+    renderJob(job);
+  }
+
+  async function uploadChunks(job) {
+    var indices = [];
+    for (var i = 0; i < job.chunkTotal; i++) if (!job.done[i]) indices.push(i);
+    if (indices.length === 0) { job.progress = 1; return; }
+
+    var cursor = 0;
+    var finished = Object.keys(job.done).length;
+    var totalBytes = job.file.size;
+    var bytesDone = 0;
+    for (var k = 0; k < job.chunkTotal; k++) {
+      if (job.done[k]) bytesDone += chunkLen(job, k);
+    }
+
+    function chunkLen(j, idx) {
+      return Math.min(j.chunkSize, j.file.size - idx * j.chunkSize);
+    }
+
+    function worker() {
+      return (async function loop() {
+        while (true) {
+          if (job.canceled) return;
+          if (job.paused) return;          // 暂停时退出循环，恢复时重新进 runUpload
+          var next = indices[cursor++];
+          if (next === undefined) return;
+
+          try {
+            await sendChunk(job, next);
+          } catch (e) {
+            if (e && e.localAbort) return; // 排队等额度期间被暂停，静默退出
+            throw e;
+          }
+          job.done[next] = true;
+          finished++;
+          bytesDone += chunkLen(job, next);
+          job.progress = bytesDone / totalBytes;
+          job.text = '上传中 ' + finished + '/' + job.chunkTotal + ' 片 · ' +
+                     Math.round(job.progress * 100) + '%';
+          renderJob(job);
+        }
+      })();
+    }
+
+    var workers = [];
+    for (var w = 0; w < Math.min(CONCURRENCY, indices.length); w++) workers.push(worker());
+    await Promise.all(workers);
+    // 暂停/取消在这里表现为「剩余分片没传完」，由调用方判断状态，不当作异常
+  }
+
+  async function sendChunk(job, index) {
+    var start = index * job.chunkSize;
+    var end = Math.min(start + job.chunkSize, job.file.size);
+    var buf = await job.file.slice(start, end).arrayBuffer();
+    var chunkMd5 = md5Bytes(new Uint8Array(buf));
+
+    await acquireSlot();
+    try {
+      // 排队等额度期间用户可能按了暂停，这时候不该再发出去了
+      if (job.canceled || job.paused) {
+        var abort = new Error('job paused while queued');
+        abort.localAbort = true;
+        throw abort;
+      }
+      await withRetry(function () {
+        return api('PUT', '/api/upload/' + job.uploadId + '/chunk/' + index, {
+          headers: { 'Content-Type': 'application/octet-stream', 'X-Chunk-Md5': chunkMd5 },
+          body: buf
+        });
+      }, 5);
+    } finally {
+      releaseSlot();
+    }
+  }
+
+  /** 只对「等一下会好」的错误重试；参数错、越权之类立刻失败，重试没有意义 */
+  async function withRetry(fn, times) {
+    times = times || 3;
+    var lastErr;
+    for (var i = 0; i < times; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        lastErr = e;
+        if (!retriable(e.code)) throw e;
+        await sleep(300 * Math.pow(2, i));   // 300 / 600 / 1200ms
+      }
+    }
+    throw lastErr;
+  }
+
+  /* ============================================================
+   * 文件列表
+   * ============================================================ */
+  function refreshFiles() {
+    return api('GET', '/api/file/list?limit=200&offset=0')
+      .then(function (list) {
+        var tbody = $('files');
+        tbody.innerHTML = '';
+        if (!list || list.length === 0) {
+          $('files-empty').classList.remove('hidden');
+          return;
+        }
+        $('files-empty').classList.add('hidden');
+        list.forEach(function (f) {
+          var tr = document.createElement('tr');
+
+          var tdName = document.createElement('td');
+          tdName.className = 'name';
+          tdName.textContent = f.fileName;
+          tdName.title = f.fileName;
+
+          var tdSize = document.createElement('td');
+          tdSize.className = 'num';
+          tdSize.textContent = fmtSize(f.fileSize);
+
+          var tdMd5 = document.createElement('td');
+          var c = document.createElement('code');
+          c.textContent = f.fileMd5.slice(0, 10) + '…';
+          c.title = f.fileMd5;
+          tdMd5.appendChild(c);
+
+          var tdTime = document.createElement('td');
+          tdTime.textContent = fmtTime(f.createdAt);
+          tdTime.style.color = 'var(--muted)';
+
+          var tdAct = document.createElement('td');
+          tdAct.className = 'act';
+          var bDl = document.createElement('button');
+          bDl.textContent = '下载';
+          bDl.onclick = function () { downloadFile(f, bDl); };
+          var bDel = document.createElement('button');
+          bDel.className = 'danger';
+          bDel.textContent = '删除';
+          bDel.onclick = function () { deleteFile(f); };
+          tdAct.appendChild(bDl);
+          tdAct.appendChild(bDel);
+
+          tr.appendChild(tdName); tr.appendChild(tdSize);
+          tr.appendChild(tdMd5); tr.appendChild(tdTime); tr.appendChild(tdAct);
+          tbody.appendChild(tr);
+        });
+      })
+      .catch(function (e) { toast('列表加载失败：' + e.message, true); });
+  }
+
+  function downloadFile(f, btn) {
+    btn.disabled = true;
+    btn.textContent = '下载中';
+    api('GET', '/api/file/' + f.userFileId + '/download', { raw: true })
+      .then(function (resp) { return resp.blob(); })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = f.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      })
+      .catch(function (e) { toast('下载失败：' + e.message, true); })
+      .finally(function () { btn.disabled = false; btn.textContent = '下载'; });
+  }
+
+  function deleteFile(f) {
+    if (!confirm('删除「' + f.fileName + '」？\n\n删除的只是你的引用。相同内容的其他人仍可下载，只有最后一个引用删除时物理对象才会真正删除。')) {
+      return;
+    }
+    api('DELETE', '/api/file/' + f.userFileId)
+      .then(function (r) {
+        toast(r.objectRemoved ? '已删除（物理对象已释放）'
+                              : '已删除（仍有 ' + r.remainingRefs + ' 个引用共享该内容）');
+        refreshFiles();
+      })
+      .catch(function (e) { toast('删除失败：' + e.message, true); });
+  }
+
+  /* ============================================================
+   * 拖拽与选择
+   * ============================================================ */
+  var drop = $('drop');
+  var picker = $('picker');
+
+  drop.onclick = function () { picker.click(); };
+  picker.onchange = function () {
+    Array.prototype.forEach.call(picker.files, startFile);
+    picker.value = '';
+  };
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); });
+  });
+  drop.addEventListener('drop', function (e) {
+    var fs = e.dataTransfer && e.dataTransfer.files;
+    if (fs) Array.prototype.forEach.call(fs, startFile);
+  });
+
+  function startFile(file) {
+    if (file.size === 0) { toast('跳过空文件：' + file.name, true); return; }
+    if (file.size > 5 * 1024 * 1024 * 1024) { toast('超过 5 GB 上限：' + file.name, true); return; }
+    var job = createJob(file);
+    runUpload(job);
+  }
+
+  // 用户 ID 变了，列表也要跟着变
+  uidEl.onchange = function () { refreshFiles(); };
+
+  refreshFiles();
+})();
+</script>
+</body>
+</html>

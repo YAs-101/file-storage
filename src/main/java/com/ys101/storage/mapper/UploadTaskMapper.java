@@ -38,4 +38,14 @@ public interface UploadTaskMapper extends BaseMapper<UploadTask> {
     @Select("SELECT storage_type AS storageType, COUNT(*) AS cnt FROM upload_task "
             + "WHERE status IN (0, 1, 2) GROUP BY storage_type ORDER BY cnt DESC")
     List<Map<String, Object>> statInFlightByStorage();
+
+    /**
+     * 该用户当前还有多少个「未完成且未过期」的会话。
+     *
+     * <p>init 限流的资源维度依据：这个数直接等于 upload_task 里为它长期占位的行数，
+     * 比「每分钟调了几次」更贴近真实风险。走 idx_user_status 索引，代价可忽略。
+     */
+    @Select("SELECT COUNT(*) FROM upload_task "
+            + "WHERE user_id = #{userId} AND status IN (0, 1, 2) AND expire_at > NOW()")
+    int countActiveSessions(@Param("userId") long userId);
 }

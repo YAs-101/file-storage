@@ -29,7 +29,8 @@ public enum ResultCode {
     SESSION_EXPIRED(1007, "上传会话已过期"),
     STORAGE_ERROR(1008, "存储层操作失败"),
     FILE_TOO_LARGE(1009, "文件超过大小上限"),
-    STORAGE_UNAVAILABLE(1010, "数据所属存储后端不可用");
+    STORAGE_UNAVAILABLE(1010, "数据所属存储后端不可用"),
+    TOO_MANY_REQUESTS(1011, "请求过于频繁");
 
     private final int code;
     private final String msg;

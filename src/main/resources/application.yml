@@ -73,6 +73,23 @@ storage:
   # 并发 complete 时等待他人合并完成的上限，超时才报 1005
   merge-wait-ms: 3000
 
+rate-limit:
+  # 压测做对照实验时关掉，否则测出来的吞吐里混着限流开销
+  enabled: ${RATE_LIMIT_ENABLED:true}
+  # 单用户同时在飞的分片请求上限。取前端默认并发（8）的 1.5 倍：
+  # 正常使用撞不到，只有客户端开几十并发或被人刷时才会触发
+  chunk-concurrency: ${RATE_LIMIT_CHUNK_CONCURRENCY:12}
+  # 一次 PUT 5MB 在本机不到 200ms，真实网络按 10Mbps 上行约 4s。
+  # 30s 是「不会被误判过期」与「进程被 kill 后额度能自愈」的折中
+  chunk-window-seconds: 30
+  # init 的两层限制。真正的资源约束是 max-active-sessions：
+  # init 每次写一行 upload_task，而这张表没有定时清理，刷起来是永久膨胀。
+  # 按「未完成会话数」限比按「调用次数」限更贴近风险——正常用户传完就变终态、不占额度，
+  # 批量上传 100 个文件也不会撞；恶意用户能堆出的活跃会话数被硬性封顶
+  max-active-sessions: ${RATE_LIMIT_MAX_ACTIVE_SESSIONS:50}
+  # 速率兜底。定 120 而不是 30：一次批量上传 100 个小文件就是 100 次 init
+  init-per-minute: ${RATE_LIMIT_INIT_PER_MINUTE:120}
+
 logging:
   level:
     root: info
