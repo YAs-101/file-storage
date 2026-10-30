@@ -50,6 +50,11 @@ file-storage/
 5. 起一个 S3 兼容服务（三选一，按当时环境决定）：MinIO 镜像 `docker run -d -p 9000:9000 -p 9001:9001 -e MINIO_ROOT_USER=minio -e MINIO_ROOT_PASSWORD=minio123 minio/minio server /data`／SeaweedFS `/s3` 网关／`rclone serve s3`
 6. 新增 `S3FileStorage`，通过配置项 `storage.type` 切换实现，业务代码不改
 
+**M3（10/30 起，前端与限流）**
+
+7. 前端在 `src/main/resources/static/index.html`，无构建链——`mvn spring-boot:run` 之后直接打开 `http://localhost:8080/` 就是完整界面（列表 / 拖拽上传 / 分片进度 / 断点续传 / 秒传 / 下载 / 删除）
+8. 限流参数在 `application.yml` 的 `rate-limit` 段。做压测对照实验时用 `RATE_LIMIT_ENABLED=false` 关掉，否则测出来的吞吐里混着限流开销
+
 ## 压测用法
 
 ```bash
@@ -163,9 +168,11 @@ python scripts/test_e2e.py        # 上传链路
 python scripts/test_download.py   # 下载链路
 python scripts/test_delete.py     # 删除链路 + 断点续传
 python scripts/test_negative.py   # 负向用例：所有失败分支的错误码
+python scripts/test_rate_limit.py # 限流：并发超限、额度归还、init 会话数上限
+node scripts/ui_check.cjs         # 前端三条链路（需 PLAYWRIGHT_PATH 指向一份 playwright）
 ```
 
-合计 58 条断言。前三个验证「正确的事做对了」，`test_negative.py` 验证「错误的事被正确拒绝了」——参数格式、状态机、路由、越权、请求链路标识共 24 条。
+合计 58 条断言。前三个验证「正确的事做对了」，`test_negative.py` 验证「错误的事被正确拒绝了」——参数格式、状态机、路由、越权、请求链路标识共 24 条。`test_rate_limit.py` 另有 15 条，`ui_check.cjs` 另有 15 条。
 
 `test_download.py` 覆盖 8 个场景：多用户秒传共享物理对象、完整下载校验 MD5、Range 五种分支（含后缀区间与越界 416）、4 线程分段并发下载拼接、ETag 304、越权统一 404、列表不泄露存储内部字段。
 
