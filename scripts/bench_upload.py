@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import sys
 import tempfile
 import time
@@ -55,6 +56,35 @@ def call_json(base, path, method="GET", payload=None, timeout=120):
         return status, json.loads(raw.decode("utf-8"))
     except Exception:
         return status, {"_raw": raw[:200].decode("utf-8", "ignore")}
+
+
+# ---------------------------------------------------------------- 限流与重试
+def biz_code(raw):
+    """从响应体取业务码。拿不到就返回 None——限流在请求体传输途中拒绝时，
+    客户端根本收不到响应，_request 会返回 -1，没有 body 可解析。"""
+    try:
+        return json.loads(raw.decode("utf-8")).get("code")
+    except Exception:
+        return None
+
+
+def retriable(status, code):
+    """与前端 withRetry 判据保持一致：网络层错误、限流、合并中、存储层瞬时失败都可重试。
+
+    网络层错误必须算进来。服务端在请求体传输途中拒绝时不会读完 body，
+    容器对超出 swallow 阈值的未读部分直接断连，客户端看到的是连接重置而不是 1011。
+    把这类错误漏掉会得到假失败——限流刚上线时这个压测脚本就是这样：
+    16 并发跑 512MB，3 个分片返回 -1，脚本把失败计入分母，吞吐数字直接失真。
+    """
+    if status == -1:
+        return True
+    return code in (1005, 1008, 1011)
+
+
+def backoff_sleep(attempt, base_ms):
+    """指数退避 + 抖动。抖动是必要的：不带抖动的同步重试会把限流窗口再打满一次。"""
+    delay = (base_ms * (2 ** (attempt - 1)) + random.uniform(0, base_ms)) / 1000.0
+    time.sleep(delay)
 
 
 # ---------------------------------------------------------------- 文件与分片
@@ -145,22 +175,36 @@ def do_upload(args):
         if done:
             print(f"服务端已有 {len(done)} 片，需补传 {len(todo)} 片（断点续传）")
 
-        latencies, errors = [], []
+        latencies, errors, attempt_counts = [], [], []
+        retries = {}
 
         def send(index):
             blob = read_chunk(path, index, chunk_size)
-            t = time.perf_counter()
-            st, _ = _request(
-                f"{args.base.rstrip('/')}/api/upload/{upload_id}/chunk/{index}",
-                "PUT", blob,
-                {"Content-Type": "application/octet-stream"},
-            )
-            cost = (time.perf_counter() - t) * 1000
-            if st == 200:
-                latencies.append(cost)
-            else:
-                errors.append((index, st))
-            return st
+            attempt = 0
+            while True:
+                t = time.perf_counter()
+                st, raw = _request(
+                    f"{args.base.rstrip('/')}/api/upload/{upload_id}/chunk/{index}",
+                    "PUT", blob,
+                    {"Content-Type": "application/octet-stream"},
+                )
+                cost = (time.perf_counter() - t) * 1000
+                code = biz_code(raw)
+                # 成功判据是 code == 0，不是 HTTP 200。限流按本项目约定包在 200 的 body 里
+                # （{"code":1011}），只看状态码会把被拒的分片当成功，最终 complete 报 1003
+                # 且丢片——静默丢数据比直接报错难查得多。
+                if st == 200 and code == 0:
+                    latencies.append(cost)
+                    attempt_counts.append(attempt)
+                    return 200
+                if attempt < args.retry and retriable(st, code):
+                    attempt += 1
+                    key = "网络层(连接重置)" if st == -1 else f"code={code}"
+                    retries[key] = retries.get(key, 0) + 1
+                    backoff_sleep(attempt, args.retry_base_ms)
+                    continue
+                errors.append((index, st, code))
+                return st
 
         t1 = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -171,6 +215,11 @@ def do_upload(args):
                     print(f"  分片进度 {n}/{len(todo)}", end="\r")
         upload_cost = time.perf_counter() - t1
         print()
+
+        retry_total = sum(retries.values())
+        if retry_total:
+            detail = "、".join(f"{k}×{v}" for k, v in retries.items())
+            print(f"重试 {retry_total} 次（{detail}），最多次数 {max(attempt_counts) if attempt_counts else 0}")
 
         fail = len(errors)
         if fail:
@@ -195,6 +244,11 @@ def do_upload(args):
         print(f"上传阶段吞吐    {mb / upload_cost:.1f} MB/s")
         print(f"分片延迟 P50/P95/P99  {pct(latencies, 50):.0f} / {pct(latencies, 95):.0f} / {pct(latencies, 99):.0f} ms")
         print(f"分片数/并发     {total} / {args.concurrency}")
+        if retry_total:
+            print(f"重试            {retry_total} 次"
+                  f"（上限 {args.concurrency} 并发 / 服务端限流 12，超出部分必然被拒后重试）")
+            print("                ↑ 上传阶段耗时含退避等待，此吞吐是「受限流约束的有效吞吐」，"
+                  "不是应用侧处理能力的上限")
         return 0
     finally:
         if cleanup and os.path.exists(path):
@@ -267,6 +321,10 @@ def main():
     ap.add_argument("--size", type=int, default=256, help="临时文件大小 MB，默认 256")
     ap.add_argument("--chunk", type=int, default=CHUNK_DEFAULT, help="分片字节数，默认 5MB")
     ap.add_argument("--concurrency", type=int, default=8, help="并发数")
+    ap.add_argument("--retry", type=int, default=6,
+                    help="单个分片的最大重试次数，默认 6；设 0 关闭重试（复现限流前的旧行为）")
+    ap.add_argument("--retry-base-ms", type=int, default=50,
+                    help="重试退避基数（毫秒），按 2^n 递增并加抖动，默认 50")
     ap.add_argument("--total", type=int, default=200, help="instant/merge-race 的请求次数")
     ap.add_argument("--upload-id", help="merge-race 模式的会话 ID")
     args = ap.parse_args()
