@@ -266,7 +266,7 @@ def do_instant(args):
         "fileMd5": md5,
         "chunkSize": args.chunk,
     }
-    lat, codes, not_instant = [], {}, 0
+    lat, codes, biz = [], {}, {}
 
     def one(_):
         t = time.perf_counter()
@@ -274,7 +274,11 @@ def do_instant(args):
         cost = (time.perf_counter() - t) * 1000
         lat.append(cost)
         codes[st] = codes.get(st, 0) + 1
-        return bool(res.get("data", {}).get("instant"))
+        # data 可能是 null（错误响应），直接链式取值会在并发下抛 AttributeError，
+        # 把「有请求失败」伪装成脚本崩溃
+        code = res.get("code")
+        biz[code] = biz.get(code, 0) + 1
+        return bool((res.get("data") or {}).get("instant"))
 
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -283,6 +287,7 @@ def do_instant(args):
 
     print(f"\n请求 {args.total} 次 / 并发 {args.concurrency} / 总耗时 {wall:.2f} s")
     print(f"HTTP 分布 {codes}")
+    print(f"业务码分布 {biz}")
     print(f"秒传命中 {sum(inst)}/{len(inst)}，未命中 {len(inst) - sum(inst)}")
     print(f"响应 P50/P95/P99  {pct(lat, 50):.0f} / {pct(lat, 95):.0f} / {pct(lat, 99):.0f} ms")
     print("\n去数据库核对（必须为 1，否则说明唯一索引失效）：")
