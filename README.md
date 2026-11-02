@@ -121,6 +121,8 @@ python scripts/bench_merge_race.py --size 128 --total 20
 
 脚本输出直接对应 `docs/设计.md` 第七节的五张表。`--concurrency` 不要超过服务端 `rate-limit.chunk-concurrency`，否则测出来的是重试行为。
 
+开跑前脚本会做三项前置检查（并发是否超服务端上限、临时盘剩余、回收站体积），任一不满足直接退出——这三种情况都会让数字「看着像性能回归」而实际是测量环境的问题。服务端改过上限时用 `--server-chunk-concurrency` 同步，故意超限观察限流行为用 `--allow-over-limit`。
+
 ## 压测结果
 
 ### 当前口径：M4 复测（2026-10-31 / 11-01）

@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import sys
 import tempfile
 import time
@@ -28,6 +29,10 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CHUNK_DEFAULT = 5 * 1024 * 1024
+# 服务端 rate-limit.chunk-concurrency 的默认值。客户端并发超过它，超出部分必然
+# 被 1011 拒掉并进入退避重试——那一轮测的是重试行为，不是吞吐。
+SERVER_CHUNK_CONCURRENCY_DEFAULT = 12
+RECYCLE_WARN_BYTES = 2 * 1024 ** 3
 
 
 # ---------------------------------------------------------------- HTTP 工具
@@ -123,6 +128,92 @@ def pct(values, p):
     s = sorted(values)
     k = max(0, min(len(s) - 1, int(round((p / 100.0) * (len(s) - 1)))))
     return s[k]
+
+
+# ---------------------------------------------------------------- 前置检查
+def _dir_size(path):
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def _recycle_bin_size():
+    """Windows 上删除进回收站，不清空的话磁盘剩余空间是假的。非 Windows 返回 None。"""
+    if os.name != "nt":
+        return None
+    total = 0
+    for letter in "CDEFG":
+        for root in (letter + ":\\$RECYCLE.BIN", letter + ":\\$Recycle.Bin"):
+            if os.path.isdir(root):
+                total += _dir_size(root)
+                break
+    return total
+
+
+def preflight(args):
+    """开跑之前先确认测量条件，不满足就退出。
+
+    三条对应三次真实踩坑：并发超出服务端上限会被拒并进入重试（测的是重试行为）；
+    临时文件所在盘放不下；回收站没清导致磁盘剩余空间虚高，而吞吐其实已经劣化。
+    产出一组「看着像性能回归」的废数，比不测更糟。
+    """
+    problems, notes = [], []
+    print("=" * 68)
+    print("测量前置检查")
+
+    cap = args.server_chunk_concurrency
+    if args.mode != "upload":
+        # 只有分片接口限并发。instant 与 merge-race 打的是 init / complete，
+        # 受 init-per-minute 与会话数限制，不受 chunk-concurrency 约束。
+        notes.append(f"{args.mode} 模式不受 chunk-concurrency 约束，跳过并发检查")
+    elif args.concurrency > cap:
+        msg = (f"客户端并发 {args.concurrency} 超过服务端 chunk-concurrency {cap}，"
+               f"超出的分片会被 1011 拒掉并进入退避重试")
+        if args.allow_over_limit:
+            notes.append(msg + "；已放行（--allow-over-limit），本轮只用于观察限流行为，吞吐不可引用")
+        else:
+            problems.append(msg + f"。降到 {cap}，或把服务端 --rate-limit.chunk-concurrency 调高；"
+                                  "确认要照原样跑，加 --allow-over-limit")
+    else:
+        notes.append(f"客户端并发 {args.concurrency} ≤ 服务端上限 {cap}，不会被限流拒绝")
+
+    if args.mode == "upload" and not args.file:
+        need = args.size * 1024 * 1024
+        tmp = tempfile.gettempdir()
+        free = shutil.disk_usage(tmp).free
+        line = f"临时目录 {tmp} 剩余 {free / 1024 ** 3:.1f} GB"
+        if free < need * 2:
+            problems.append(line + f"，放不下 {args.size} MB 的待传文件（留 2 倍余量）")
+        else:
+            notes.append(line)
+
+    rb = _recycle_bin_size()
+    if rb is not None:
+        if rb > RECYCLE_WARN_BYTES:
+            problems.append(f"回收站 {rb / 1024 ** 3:.1f} GB 未清。本机删除进回收站，"
+                            "不清空的话磁盘剩余空间是假的（实测清掉 5 GB 后同档吞吐立刻回升）")
+        else:
+            notes.append(f"回收站 {rb / 1024 ** 2:.0f} MB，可忽略")
+
+    for n in notes:
+        print(f"  ok    {n}")
+    for p in problems:
+        print(f"  阻止  {p}")
+    print("=" * 68)
+
+    if not problems:
+        print()
+        return
+    if args.skip_preflight:
+        print("已指定 --skip-preflight，忽略以上问题继续\n")
+        return
+    print("\n前置条件不满足，这组数字不可比。确认要跑请加 --skip-preflight。")
+    sys.exit(2)
 
 
 # ---------------------------------------------------------------- 测试流程
@@ -332,7 +423,15 @@ def main():
                     help="重试退避基数（毫秒），按 2^n 递增并加抖动，默认 50")
     ap.add_argument("--total", type=int, default=200, help="instant/merge-race 的请求次数")
     ap.add_argument("--upload-id", help="merge-race 模式的会话 ID")
+    ap.add_argument("--server-chunk-concurrency", type=int, default=SERVER_CHUNK_CONCURRENCY_DEFAULT,
+                    help=f"服务端 rate-limit.chunk-concurrency 的值，默认 {SERVER_CHUNK_CONCURRENCY_DEFAULT}；"
+                         "客户端并发超过它会被限流")
+    ap.add_argument("--allow-over-limit", action="store_true",
+                    help="并发超过服务端上限时仍然继续（只用于观察限流行为，吞吐不可引用）")
+    ap.add_argument("--skip-preflight", action="store_true", help="跳过测量前置检查")
     args = ap.parse_args()
+
+    preflight(args)
 
     if args.mode == "upload":
         sys.exit(do_upload(args))
